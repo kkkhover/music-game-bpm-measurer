@@ -51,16 +51,16 @@ function sectionIndexAt(reds, timeMs) {
 }
 
 /**
- * 计划「新增红线」的位置 —— **严格落在上一条红线的下一拍**（拍号 = src 拍号 + 1）。
+ * 计划「新增红线」的位置 —— **始终追加到「最后一条红线的下一拍」**。
  *
- * 为什么不能简单地 src.time + 一拍：当"上一段的一拍"刚好越过后面的红线时，
- * 新红线会被排到**再下一条**之后，此时它的编号由后面那条红线反推（≠ src+1），
- * 整串编号串位，而且会和已有红线挤在一起。
- * → 这里先按 src 的拍长算出候选时间；若被后面的红线占住，就顺延到那条之后继续找空位。
+ * ★ v0.8.17 修正：原实现用 anchorMs（播放头/双击位置）去 sectionIndexAt 找"所在段"，
+ *   导致播放头停在两条红线中间时，新红线被加在"左边红线下一拍"（插到中间），
+ *   而不是追加到末尾。现改为**永远以最后一条红线为基准**，落在它下一拍
+ *   （与主程序 App.tsx 的 handleAddPoint 行为一致）。
  *
  * @param {{time:number,bpm:number,meter?:number}[]} reds 现有红线（按 time 升序）
- * @param {number} anchorMs  锚点时间（播放头/双击位置，只用来决定从哪一条红线往后数）
- * @param {number} [bpmHint] 指定新红线的 BPM（>0 生效，否则继承 src 的 BPM）
+ * @param {number} anchorMs  锚点时间（仅当列表为空时用作首条红线的时间）
+ * @param {number} [bpmHint] 指定新红线的 BPM（>0 生效，否则继承最后一条的 BPM）
  * @returns {{time:number,bpm:number,meter:number,srcIndex:number,srcBeatIndex:number}}
  */
 export function planAddRedLine(reds, anchorMs = 0, bpmHint) {
@@ -73,19 +73,11 @@ export function planAddRedLine(reds, anchorMs = 0, bpmHint) {
     }
 
     deriveBeatIndex(list); // 先编好号（顺带写回 beatIndex）
-    let i = sectionIndexAt(list, Math.max(0, Math.round(Number(anchorMs) || 0)));
-    let src = list[i];
-    let timeMs = 0;
-
-    for (let guard = 0; guard <= list.length; guard++) {
-        const beatMs = 60000 / (src.bpm || 120); // 上一段一拍长（毫秒）
-        const t = Math.round(src.time + beatMs); // 下一拍的绝对时间
-        const next = list[i + 1];
-        if (!next || t < next.time) { timeMs = t; break; } // 有空位 → 就是它
-        if (i + 1 >= list.length) { timeMs = t; break; } // 已经是最后一条 → 直接挂后面
-        i += 1; // 下一拍被后面的红线占了 → 顺延到那一条之后继续找
-        src = list[i];
-    }
+    // ★ 总是取最后一条红线作为基准，下一拍 = 它往后走一拍
+    const i = list.length - 1;
+    const src = list[i];
+    const beatMs = 60000 / (src.bpm || 120);
+    const timeMs = Math.round(src.time + beatMs);
 
     return {
         time: timeMs,

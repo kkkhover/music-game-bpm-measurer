@@ -723,7 +723,12 @@
         const time = el.querySelector('.f-time');
         time.addEventListener('change', () => editTime(i, Number(time.value)));
         const meter = el.querySelector('.f-meter');
-        if (meter) meter.addEventListener('change', () => editMeter(i, Number(meter.value)));
+        if (meter) {
+            // ★ v0.8.17：改用 blur（失焦即提交），完全对齐主程序的 onBlur 语义。
+            //   之前用 change（值变+失焦才触发），用户反馈"回车后没更新"——blur 更可靠，
+            //   回车/点别处/失焦都会触发；editMeter 内部幂等去重，值没变不发请求。
+            meter.addEventListener('blur', () => editMeter(i, Number(meter.value)));
+        }
 
         const del = el.querySelector('.sc-del');
         if (del) del.addEventListener('click', (e) => { e.stopPropagation(); deleteSection(i); });
@@ -908,6 +913,10 @@
             renderSections();
             return;
         }
+        // ★ v0.8.17 修正：幂等去重 —— blur 兜底会和 change 重复触发，值没变就跳过，
+        //   避免"失焦一次就 push 一条空撤销步 + 白发一次 postEdit"。
+        const secs = viz ? viz.getSections() : [];
+        if (secs[i] && secs[i].meter === m) return;
         pushUndo('meter:' + i); // 同一个输入框连续改 → 合并成一步
         postEdit({ type: 'meter', redIndex: i, meter: m }, `第 ${i + 1} 段拍号 → ${m}/${m}`);
     }
