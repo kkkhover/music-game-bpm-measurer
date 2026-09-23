@@ -1,37 +1,3 @@
-# BPM 测速助手 · 许可证与来源声明
-# License, Credits and Copyright Notices
-
-本仓库是**衍生作品**。下面三层的版权与许可**全部保留**，缺一不可。
-
-## 1. 原始项目（上游的源头）
-
-- 项目：**Bpm-Measurer** —— https://github.com/CMYC4237/Bpm-Measurer
-- 作者：**CMYC4237**（B 站 @CMYC_4237）
-- 讲解视频：**BV1n9XPB7Eyb** —— https://www.bilibili.com/video/BV1n9XPB7Eyb
-- 许可：**Apache License 2.0**
-- 原项目自述：*"这是一个 BPM 测量器，用于手工精确测量歌曲的 BPM，来用于你的音乐游戏关卡中。
-  可以测量存在变速的歌曲。"*
-
-## 2. Electron 打包版（本仓库的直接上游）
-
-- 项目：**Bpm-Measurer-Util** —— https://github.com/iExploder/Bpm-Measurer-Util
-- 作者：**iExploder**
-- 许可：**Apache License 2.0**（其提交说明为 *"Change license to Apache 2.0 according to original"*）
-- 说明：本项目直接基于它继续开发，目录名 `Bpm-Measurer-Util-release-v0.1.0` 即来源于此。
-
-## 3. 本项目（本仓库）
-
-- 项目：**music-game-bpm-measurer** —— https://github.com/kkkhover/music-game-bpm-measurer
-- 作者：**kkkhover**
-- 许可：**Apache License 2.0**（继承上游；全文见下方）
-- 在两位上游作者工作的基础上做的扩展包括：osu! 制谱侧栏（`osu-maphelper_v*/`）、
-  9 语言界面、频谱/声谱与内存优化、多游戏 timing 导出等。
-
-> **关于修改的说明**：被修改过的源文件已在代码注释中标注（搜索 `v0.8.` 可见逐版改动），
-> 完整变更列表见随 Releases 发布的 `更新日志.md`。
-
----
-
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -233,17 +199,3 @@
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
-
-
----
-
-## 第三方组件声明 / Third-party notices
-
-本项目的部分依赖以各自许可证分发，详见「依赖库与原理.md」。其中需要特别说明的是：
-
-- Electron、React、Vite、electron-builder 等：MIT
-- lucide-react：ISC
-- TypeScript：Apache-2.0
-- **soundtouchjs：LGPL-2.1** —— 本项目以依赖形式引用、未修改其源码。
-
-（以上第三方组件的许可与本项目自身的许可相互独立，各自按其条款执行。）

@@ -179,4 +179,4 @@ dist/
 Apache License 2.0
 
 继承上游许可（原项目 CMYC4237/Bpm-Measurer 与其 Electron 版 iExploder/Bpm-Measurer-Util 均为 Apache-2.0）。
-完整的三代版权声明与许可全文见仓库根目录的 `LICENSE`。
+完整的三代版权声明见仓库根目录的 `NOTICE`，许可全文见 `LICENSE`。

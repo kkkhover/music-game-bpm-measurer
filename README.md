@@ -19,7 +19,8 @@
 | ② Electron 打包版 | **Bpm-Measurer-Util** · **iExploder** | https://github.com/iExploder/Bpm-Measurer-Util | Apache-2.0 |
 | ③ 本仓库 | **music-game-bpm-measurer** · kkkhover | https://github.com/kkkhover/music-game-bpm-measurer | Apache-2.0 |
 
-- **许可：Apache License 2.0**（继承上游，**不是 MIT**）。完整的三代版权声明与许可全文见 [`LICENSE`](LICENSE)。
+- **许可：Apache License 2.0**（继承上游，**不是 MIT**）。许可全文见 [`LICENSE`](LICENSE)；
+  三代来源与版权声明见 [`NOTICE`](NOTICE)。
 - 上游原项目的自述：*"这是一个 BPM 测量器，用于手工精确测量歌曲的 BPM，来用于你的音乐游戏关卡中。可以测量存在变速的歌曲。"*
 - 本仓库在两位上游作者工作之上新增的部分：osu! 制谱侧栏（`osu-maphelper_v*/`）、9 语言界面、
   频谱/声谱与内存优化、多游戏 timing 导出等。
@@ -368,7 +369,8 @@ node tests/ui_contract.mjs         # UI 契约测试
 
 | 文件 | 内容 |
 |---|---|
-| `LICENSE` | **许可证与来源声明**（三代版权 + Apache-2.0 全文） |
+| `LICENSE` | Apache License 2.0 全文 |
+| `NOTICE` | **来源与版权声明**（三代作者 · 第三方组件） |
 | `更新日志.md` | 历代版本**提出的问题 / 修复 / 新增**（含总表） |
 | `依赖库与原理.md` | 依赖库清单（含许可证）+ 关键功能实现原理 |
 | `源码/主程序/README.md` | 主程序源码侧说明（构建、打包、双模式入口细节） |
