@@ -492,20 +492,23 @@ const Visualizer: React.FC<VisualizerProps> = ({
                 // 红线节拍线延迟补偿：仅刻度显示 x 加偏移（时间刻度尺/频谱/波形不受影响）
                 const x = timeToX(time + beatLineDelaySec);
                 if (x < x0 - 2 || x > x1 + 2) { relIndex++; continue; } // 只画区域内的刻度
+                // ★ v0.8.17：按拍号（meter）区分强拍（小节首拍）与弱拍——强拍线更亮更粗，弱拍更淡
+                const meter = Number(point.meter) > 0 ? Math.round(Number(point.meter)) : 4;
+                const isDownbeat = relIndex % meter === 0;
                 ctx.beginPath();
-                ctx.strokeStyle = 'rgba(0, 242, 255, 0.6)';
-                ctx.lineWidth = 1;
+                ctx.strokeStyle = isDownbeat ? 'rgba(0, 242, 255, 0.95)' : 'rgba(0, 242, 255, 0.35)';
+                ctx.lineWidth = isDownbeat ? 2 : 1;
                 ctx.moveTo(x, 0);
                 ctx.lineTo(x, waveHeight + specHeight);
                 ctx.stroke();
-                ctx.fillStyle = 'rgba(0, 242, 255, 0.8)';
+                ctx.fillStyle = isDownbeat ? 'rgba(0, 242, 255, 0.95)' : 'rgba(0, 242, 255, 0.5)';
                 ctx.beginPath();
                 ctx.moveTo(x, arrowY0);
                 ctx.lineTo(x - 5, arrowY0 + 8);
                 ctx.lineTo(x + 5, arrowY0 + 8);
                 ctx.fill();
-                // 蓝线每 4 拍标一次全局拍号（与之前版本一致）；与红色段起点重合时不标，避免文字重叠
-                if (relIndex % 4 === 0 && !sectionStartSet.has(Math.round((time + beatLineDelaySec) * 1000))) {
+                // 强拍标全局拍号；与红色段起点重合时不标，避免文字重叠
+                if (isDownbeat && !sectionStartSet.has(Math.round((time + beatLineDelaySec) * 1000))) {
                     ctx.fillStyle = '#00f2ff';
                     ctx.fillText(beatIndex.toString(), x, arrowY0 + 22);
                 }

@@ -1139,22 +1139,24 @@
                     // 红线节拍线延迟：只偏移拍线的显示位置（刻度尺/频谱/波形不受影响）
                     const x = this.timeToX(time + delay);
                     if (x >= -2 && x <= this.width + 2) {
+                        // ★ v0.8.17：按拍号（meter）区分强拍（小节首拍）与弱拍——
+                        //   强拍线更亮更粗，弱拍线更淡。改拍号后小节线的间隔（每 meter 拍）跟着变。
+                        const meter = Number(p.meter) > 0 ? Math.round(Number(p.meter)) : 4;
+                        const isDownbeat = relIndex % meter === 0;
                         ctx.beginPath();
-                        ctx.strokeStyle = 'rgba(0, 242, 255, 0.6)';
-                        ctx.lineWidth = 1;
+                        ctx.strokeStyle = isDownbeat ? 'rgba(0, 242, 255, 0.95)' : 'rgba(0, 242, 255, 0.35)';
+                        ctx.lineWidth = isDownbeat ? 2 : 1;
                         ctx.moveTo(x, 0);
                         ctx.lineTo(x, contentBottom);
                         ctx.stroke();
-                        ctx.fillStyle = 'rgba(0, 242, 255, 0.8)';
+                        ctx.fillStyle = isDownbeat ? 'rgba(0, 242, 255, 0.95)' : 'rgba(0, 242, 255, 0.5)';
                         ctx.beginPath();
                         ctx.moveTo(x, arrowY0);
                         ctx.lineTo(x - 5, arrowY0 + 8);
                         ctx.lineTo(x + 5, arrowY0 + 8);
                         ctx.fill();
-                        // ★ v0.8.17：按该段的拍号（meter）标小节号（默认 4 拍一小节）；
-                        //   与红线重合处不标（避免文字重叠）。改拍号后这里会跟着变。
-                        const meter = Number(p.meter) > 0 ? Math.round(Number(p.meter)) : 4;
-                        if (relIndex % meter === 0 && !sectionStartSet.has(Math.round((time + delay) * 1000))) {
+                        // 强拍标全局拍号；与红线重合处不标（避免文字重叠）
+                        if (isDownbeat && !sectionStartSet.has(Math.round((time + delay) * 1000))) {
                             ctx.fillStyle = '#00f2ff';
                             ctx.fillText(String(beatIndex), x, arrowY0 + 22);
                         }

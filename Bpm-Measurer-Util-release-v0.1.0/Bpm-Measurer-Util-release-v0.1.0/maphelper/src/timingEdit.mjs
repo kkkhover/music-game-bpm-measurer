@@ -143,17 +143,30 @@ export function buildTimingPoints(parsed, payload = {}) {
     //   会被整个丢掉（导出文件里只剩一两条红线的根因）。
     if (payload.mode === 'merge') {
         const edits = Array.isArray(payload.points) ? payload.points : [];
+        // ★ v0.8.17：原谱面红线按时间建索引 —— 红线也要继承原谱面的 sampleSet/volume/effects
+        //   （kiai、omit-first-barline 等段落特效不能丢，否则替换后谱面行为改变）。
+        const origRedByTime = new Map();
+        for (const o of originals) {
+            if (o.uninherited) {
+                const k = Math.round(Number(o.time) || 0);
+                if (!origRedByTime.has(k)) origRedByTime.set(k, o);
+            }
+        }
         const reds = edits
             .map((e) => {
                 const bpm = Number(e.bpm);
                 if (!(bpm > 0)) return null; // 无效 BPM 的点直接丢弃
+                const t = Math.max(0, Math.round(Number(e.time) || 0));
+                const o = origRedByTime.get(t);
                 return {
-                    time: Math.max(0, Math.round(Number(e.time) || 0)),
+                    time: t,
                     bpm,
                     uninherited: true,
-                    meter: e.meter !== undefined ? Number(e.meter) : 4,
-                    volume: e.volume !== undefined ? Number(e.volume) : 100,
-                    effects: 0
+                    meter: e.meter !== undefined ? Number(e.meter) : (o && Number(o.meter) > 0 ? Number(o.meter) : 4),
+                    sampleSet: o ? Number(o.sampleSet) : 0,
+                    sampleIndex: o ? Number(o.sampleIndex) : 0,
+                    volume: e.volume !== undefined ? Number(e.volume) : (o ? Number(o.volume) : 100),
+                    effects: o ? Number(o.effects) : 0
                 };
             })
             .filter(Boolean);
@@ -169,21 +182,39 @@ export function buildTimingPoints(parsed, payload = {}) {
         //   基准 BPM 也照搬 App.tsx：取第一条（时间最早）红线的 BPM。
         const baseBpm = Number(payload.baseBpm) > 0 ? Number(payload.baseBpm) : reds[0].bpm;
 
+        // ★ v0.8.17 修复"导出 timing 替换后无法正常使用"：
+        //   旧写法把绿线的 sampleSet/sampleIndex/volume/effects 全部写死（1/0/72/0），
+        //   而原谱面的绿线往往带着 kiai（effects bit0=1）或 omit-first-barline（bit3=8）、
+        //   以及自定义的 sampleSet/volume。写死会把这些**段落特效与音色全丢掉**，
+        //   替换进谱面后 kiai 段落消失、绿线行为与原谱不一致。
+        //   → 现在：绿线**继承原谱面同一时间点绿线**的 sampleSet/sampleIndex/volume/effects/meter，
+        //     只有 beatLength（SV）重新计算。原谱面该时间点没有绿线时才用默认值。
+        //   原绿线按时间建索引（同一时间可能多条绿线，取第一条作为继承模板）。
+        const origGreenByTime = new Map();
+        for (const o of originals) {
+            if (!o.uninherited) {
+                const k = Math.round(Number(o.time) || 0);
+                if (!origGreenByTime.has(k)) origGreenByTime.set(k, o);
+            }
+        }
+
         const out = [];
         for (const r of reds) {
             out.push(r);
             // SV 为 0/负/非数时退回 1.0（等价于不变速），避免写出非法 beatLength
             const svRaw = roundHalfUp(baseBpm / r.bpm, 2);
             const sv = svRaw > 0 ? svRaw : 1;
+            const g = origGreenByTime.get(r.time);
             out.push({
                 time: r.time,
                 beatLength: -100 / sv,
                 uninherited: false,
-                meter: 4,
-                sampleSet: 1,
-                sampleIndex: 0,
-                volume: 72,
-                effects: 0
+                // ★ 绿线的 sampleSet/sampleIndex/volume/effects/meter 继承原谱面；无则用合理默认
+                meter: g && Number(g.meter) > 0 ? Number(g.meter) : (Number(r.meter) > 0 ? Number(r.meter) : 4),
+                sampleSet: g ? Number(g.sampleSet) : 0,
+                sampleIndex: g ? Number(g.sampleIndex) : 0,
+                volume: g ? Number(g.volume) : 100,
+                effects: g ? Number(g.effects) : 0
             });
         }
         return out;

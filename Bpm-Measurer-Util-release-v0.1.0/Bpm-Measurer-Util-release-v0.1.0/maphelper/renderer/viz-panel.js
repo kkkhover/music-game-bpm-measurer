@@ -675,7 +675,7 @@
         return `<div class="sec-card${sec.anchor ? ' anchor' : ''}" data-i="${i}" title="${title}">
             <div class="sc-top">
                 <span class="sc-no">${sec.anchor ? '起点锚点' : '#' + (i + 1)}</span>
-                <span class="sc-beat">拍 ${sec.beatIndex} · 拍号 <input class="f-meter" type="number" step="1" min="1" max="64" value="${sec.meter}" title="拍号（每小节几拍，4=4/4、3=3/4；分母固定为 4 分音符）" />/4</span>
+                <span class="sc-beat">拍 ${sec.beatIndex} · 拍号 <input class="f-meter" type="number" step="1" min="1" max="7" value="${sec.meter}" title="拍号（每小节几拍，1~7，分母固定为 4 分音符）" />/4</span>
                 ${sec.anchor ? '' : '<button class="sc-del" title="删除这个变速段落">✕</button>'}
             </div>
             <div class="sc-f">
@@ -902,8 +902,8 @@
      */
     function editMeter(i, v) {
         const m = Math.round(Number(v));
-        if (!Number.isFinite(m) || m < 1 || m > 64) {
-            flashHint('拍号需为 1~64 的整数');
+        if (!Number.isFinite(m) || m < 1 || m > 7) {
+            flashHint('拍号需为 1~7 的整数（与 osu! 一致，最大 7/4 拍）');
             cardsSig = '';
             renderSections();
             return;

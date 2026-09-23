@@ -183,7 +183,7 @@ const TimingRow: React.FC<TimingRowProps> = ({ point, index, totalCount, onUpdat
                 <div className="flex items-center gap-1.5">
                     <input
                         type="number"
-                        step="1" min="1" max="64"
+                        step="1" min="1" max="7"
                         value={meterStr}
                         onChange={(e) => setMeterStr(e.target.value)}
                         onBlur={handleBlurMeter}
@@ -530,7 +530,7 @@ function App() {
           }
           // 拍号（meter）：整数、至少 1（只影响小节线/节拍器分组，不改变红线位置）
           if (field === 'meter') {
-              const m = Math.max(1, Math.min(64, Math.round(value as number)));
+              const m = Math.max(1, Math.min(7, Math.round(value as number)));
               return { ...p, meter: m };
           }
           // 改 BPM：只改变这条红线下方的蓝线间距（红线位置由绝对时间决定，不会挪动下一条红线）

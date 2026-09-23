@@ -130,7 +130,7 @@ ok('overlay / playhead 覆盖整高', /this\.overlayCanvas, this\.width, this\.h
 ok('CSS 未写死 top:0（否则四层会叠在顶部）', !/\.viz-container canvas \{[^}]*top: 0/.test(css));
 ok('渲染倍率参与 dpr（devicePixelRatio × renderScale）', /devicePixelRatio/.test(vizJs) && /_renderScale/.test(vizJs));
 ok('派生整数拍号（红线/蓝线编号）', /_deriveBeatIndex/.test(vizJs) && /beatIndex/.test(vizJs));
-ok('红线/蓝线配色与软件一致', /#ef4444/.test(vizJs) && /rgba\(0, 242, 255, 0\.6\)/.test(vizJs));
+ok('红线/蓝线配色与软件一致（蓝线分强/弱拍两档）', /#ef4444/.test(vizJs) && /rgba\(0, 242, 255, 0\.95\)/.test(vizJs) && /rgba\(0, 242, 255, 0\.35\)/.test(vizJs));
 ok('红线节拍线延迟只偏移拍线', /_beatLineDelaySec/.test(vizJs) && /beatLineDelayMs/.test(vizJs));
 
 // ---------- ⑤ 主进程窗口行为 ----------
