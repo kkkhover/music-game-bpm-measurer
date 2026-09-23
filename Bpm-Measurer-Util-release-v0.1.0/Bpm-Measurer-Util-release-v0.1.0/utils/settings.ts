@@ -72,8 +72,6 @@ export interface AppSettings {
   beatLineDelayMs: number; // 红线节拍线延迟手动微调（毫秒，滑条 ±100 / 输入框任意值）：仅偏移节拍线显示位置，不影响频谱/声谱时间轴
   specFFTSize: number;  // 频谱 FFT 精度（采样点数，2 的幂）：越大频率分辨率越高（0.5K≈86Hz / 1K≈43Hz / 2K≈21Hz / 4K≈11Hz @44.1kHz）
   specSensitivity: number; // 频谱显示灵敏度（dB 阈值）：低于该 dB 显示为黑色，越小越敏感（60~120）
-  // ★ v0.8.16：播放时自动跟随播放头（与侧栏 viz 的「自动翻页」同款行为）
-  followPlayhead: boolean;
   // ---- 语言 ----
   lang: Language;
 }
@@ -96,7 +94,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   beatLineDelayMs: 30, // 默认红线节拍线延迟 30ms（v0.7.22 起；用户仍可在设置里微调）
   specFFTSize: 1024, // 默认 1K 精度（频率分辨率 ~43Hz，兼顾清晰度与性能）
   specSensitivity: 75, // 默认灵敏度阈值 75dB（弱信号较明显，画面通透）
-  followPlayhead: true, // 默认开启自动跟随（播放头滑出视区即翻页，符合绝大多数制谱习惯）
   lang: 'zh',
 };
 
@@ -131,7 +128,7 @@ export const SWATCH_COLORS: string[] = [
 ];
 
 const STORAGE_KEY = 'bpm-measurer-settings';
-const STORAGE_VERSION = 8; // v0.8.16：新增 followPlayhead（自动跟随播放头，默认开）
+const STORAGE_VERSION = 7; // v0.8.16 回退：移除 followPlayhead（该版新增的自动跟随有回归，整体回退到 v0.7.22 行为）
 
 /** 从 localStorage 读取设置（合并默认值，容错；旧版本自动迁移频谱默认） */
 export function loadSettings(): AppSettings {
@@ -145,6 +142,8 @@ export function loadSettings(): AppSettings {
     delete (merged as any).renderQuality;
     delete (merged as any).audioDelayMs;
     delete (merged as any).defaultMeasureLength;
+    // v0.8.16 回退：删除自动跟随设置残留键（该功能有回归，已整体移除）
+    delete (merged as any).followPlayhead;
     // 旧版本（无版本标记或版本过低）→ 强制套用新频谱默认（完整色阶 + 青绿波形），主题/语言保留
     if (parsed.__v !== STORAGE_VERSION) {
       merged.specPalette = DEFAULT_SETTINGS.specPalette;

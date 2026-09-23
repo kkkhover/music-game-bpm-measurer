@@ -218,11 +218,6 @@ function App() {
   // 只留 fileName 是拿不到文件的。
   const [audioPath, setAudioPath] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  // ★ v0.8.16：与 isPlaying state 同步的 ref —— 供 Visualizer 的 rAF 循环每帧读取实时播放状态
-  //   （跟随滚动要在 rAF 里判定"是否正在播放"，不能等 React 渲染；且必须显式传入，
-  //    不能像侧栏那样靠"时间有没有变"推断，否则暂停后手动滚动会被误判成播放而拽回）
-  const isPlayingRef = useRef(false);
-  isPlayingRef.current = isPlaying;
   const [currentTime, setCurrentTime] = useState(0);
   const [isMetronomeOn, setIsMetronomeOn] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -1140,9 +1135,6 @@ function App() {
                             specFFTSize={settings.specFFTSize}
                             specSensitivity={settings.specSensitivity}
                             beatLineDelaySec={settings.beatLineDelayMs / 1000}
-                            followPlayhead={settings.followPlayhead}
-                            isPlayingRef={isPlayingRef}
-                            onAutoScroll={(sl) => setViewState(v => (v.scrollLeft === sl ? v : { ...v, scrollLeft: sl }))}
                         />
                     )}
                 </div>

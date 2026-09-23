@@ -328,19 +328,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onChange, onRes
                 title={t('specSensitivityHint')}
               />
             </div>
-            {/* ★ v0.8.16：自动跟随播放头（红线离开窗口时自动翻页，与侧栏「自动翻页」同款行为） */}
-            <div className="mt-3 pt-3 border-t border-[var(--line)]">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-[var(--t3)] uppercase font-bold tracking-widest">{t('followPlayhead')}</span>
-                <button
-                  onClick={() => onChange({ ...settings, followPlayhead: !settings.followPlayhead })}
-                  className={`px-3 py-1 rounded-lg text-[10px] font-black border transition-all ${settings.followPlayhead ? 'bg-[var(--accent)]/20 text-[var(--accent)] border-[var(--accent)]/40' : 'bg-[var(--chip2)] text-[var(--t4)] border-[var(--line2)]'}`}
-                >
-                  {settings.followPlayhead ? t('on') : t('off')}
-                </button>
-              </div>
-              <p className="text-[10px] text-[var(--t4)] mt-1.5 leading-relaxed">{t('followPlayheadHint')}</p>
-            </div>
           </section>
 
           {/* ===== 4 一键复原 ===== */}
