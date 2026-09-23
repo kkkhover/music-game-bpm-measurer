@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta
+            http-equiv="Content-Security-Policy"
+            content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; media-src 'self' blob:"
+        />
+        <title>设置</title>
+        <link rel="stylesheet" href="style.css" />
+    </head>
+    <body class="panel-body">
+        <div class="panel-wrap">
+            <div class="panel-titlebar">
+                <span class="pt-title">设置</span>
+                <button class="pin-btn" id="btn-pin" title="切换置顶（默认置顶）">📌</button>
+            </div>
+
+            <div class="set-scroll">
+                <!-- ── 各窗口独立透明度 ── -->
+                <div class="set-sec">窗口透明度（各自独立）</div>
+                <div class="set-row">
+                    <span class="lb">侧栏主窗口</span>
+                    <input type="range" id="op-main" min="0.2" max="1" step="0.01" />
+                    <b id="op-main-val">100%</b>
+                    <input type="number" class="set-num" id="op-main-num" min="20" max="100" step="1" title="直接输入透明度百分比" />
+                </div>
+                <div class="set-row">
+                    <span class="lb">频谱声谱 + 变速段落</span>
+                    <input type="range" id="op-viz" min="0.2" max="1" step="0.01" />
+                    <b id="op-viz-val">100%</b>
+                    <input type="number" class="set-num" id="op-viz-num" min="20" max="100" step="1" title="直接输入透明度百分比" />
+                </div>
+                <div class="set-row">
+                    <span class="lb">谱面信息</span>
+                    <input type="range" id="op-map" min="0.2" max="1" step="0.01" />
+                    <b id="op-map-val">100%</b>
+                    <input type="number" class="set-num" id="op-map-num" min="20" max="100" step="1" title="直接输入透明度百分比" />
+                </div>
+                <div class="set-row">
+                    <span class="lb">自动备份</span>
+                    <input type="range" id="op-backup" min="0.2" max="1" step="0.01" />
+                    <b id="op-backup-val">100%</b>
+                    <input type="number" class="set-num" id="op-backup-num" min="20" max="100" step="1" title="直接输入透明度百分比" />
+                </div>
+                <div class="set-row">
+                    <span class="lb">设置（本窗口）</span>
+                    <input type="range" id="op-settings" min="0.2" max="1" step="0.01" />
+                    <b id="op-settings-val">100%</b>
+                    <input type="number" class="set-num" id="op-settings-num" min="20" max="100" step="1" title="直接输入透明度百分比" />
+                </div>
+                <div class="set-row">
+                    <span class="lb">日志</span>
+                    <input type="range" id="op-log" min="0.2" max="1" step="0.01" />
+                    <b id="op-log-val">100%</b>
+                    <input type="number" class="set-num" id="op-log-num" min="20" max="100" step="1" title="直接输入透明度百分比" />
+                </div>
+                <div class="set-hint">每个窗口单独调，改完立刻生效（主进程每 0.5 秒同步一次）。滑条右侧的数字框可直接输入数值。</div>
+
+                <!-- ── 频谱 / 声谱（与 BPM 测速助手设置项一一对应）── -->
+                <div class="set-sec">频谱 / 声谱（同软件设置）</div>
+                <div class="set-row">
+                    <span class="lb">声谱配色</span>
+                    <select id="cfg-palette"></select>
+                </div>
+                <div class="set-row sub">
+                    <span class="lb">自定义三色</span>
+                    <span class="set-tri">
+                        <label>低<input type="color" id="cfg-c1" /></label>
+                        <label>中<input type="color" id="cfg-c2" /></label>
+                        <label>高<input type="color" id="cfg-c3" /></label>
+                    </span>
+                </div>
+                <div class="set-row">
+                    <span class="lb">FFT 精度</span>
+                    <select id="cfg-fft">
+                        <option value="512">0.5K（≈86Hz）</option>
+                        <option value="1024">1K（≈43Hz）</option>
+                        <option value="2048">2K（≈21Hz）</option>
+                        <option value="4096">4K（≈11Hz）</option>
+                    </select>
+                </div>
+                <div class="set-row">
+                    <span class="lb">灵敏度</span>
+                    <input type="range" id="cfg-sensitivity" min="60" max="120" step="1" />
+                    <b id="sensitivity-val">75</b>
+                    <input type="number" class="set-num" id="cfg-sensitivity-num" min="60" max="120" step="1" title="直接输入灵敏度 dB" />
+                </div>
+                <div class="set-row">
+                    <span class="lb">对数刻度</span>
+                    <input type="range" id="cfg-logbase" min="1" max="200" step="1" />
+                    <b id="logbase-val">50</b>
+                    <input type="number" class="set-num" id="cfg-logbase-num" min="1" max="200" step="1" title="直接输入对数底" />
+                </div>
+                <div class="set-row">
+                    <span class="lb">峰值阈值</span>
+                    <input type="range" id="cfg-peak" min="0.5" max="0.98" step="0.01" />
+                    <b id="peak-val">0.50</b>
+                    <input type="number" class="set-num" id="cfg-peak-num" min="0.5" max="0.98" step="0.01" title="直接输入峰值阈值" />
+                </div>
+                <div class="set-row">
+                    <span class="lb">峰值颜色</span>
+                    <input type="color" id="cfg-peakcolor" />
+                    <span class="set-hint">超过阈值的信号向它过渡</span>
+                </div>
+                <div class="set-row">
+                    <span class="lb">波形颜色</span>
+                    <input type="color" id="cfg-wavecolor" />
+                </div>
+                <div class="set-row">
+                    <span class="lb">垂直倒转</span>
+                    <input type="checkbox" id="cfg-invert" />
+                    <span class="set-hint">勾选后高频在下、低频在上</span>
+                </div>
+                <div class="set-row">
+                    <span class="lb">渲染倍率</span>
+                    <input type="range" id="cfg-renderscale" min="0.5" max="2" step="0.05" />
+                    <b id="renderscale-val">1.00</b>
+                    <input type="number" class="set-num" id="cfg-renderscale-num" min="0.5" max="2" step="0.05" title="直接输入渲染倍率" />
+                </div>
+                <div class="set-row">
+                    <span class="lb">节拍线延迟</span>
+                    <input type="range" id="cfg-delay" min="-100" max="100" step="1" />
+                    <b id="delay-val">30ms</b>
+                    <input type="number" class="set-num" id="cfg-delay-num" min="-100" max="100" step="1" title="直接输入延迟毫秒" />
+                </div>
+                <div class="set-row sub">
+                    <span class="lb">跟随软件</span>
+                    <input type="checkbox" id="cfg-delay-follow" />
+                    <button class="mini" id="btn-bpm-reload" title="重新读取 BPM 测速助手的设置（软件里改完延迟后点一下）">⟳ 重新读取</button>
+                </div>
+                <div class="set-row">
+                    <span class="lb">显示波形</span>
+                    <input type="checkbox" id="cfg-showwave" />
+                </div>
+                <div class="set-row">
+                    <span class="lb">显示声谱</span>
+                    <input type="checkbox" id="cfg-showspec" />
+                </div>
+                <div class="set-hint" id="delay-src">节拍线延迟来源：读取中…</div>
+                <div class="set-hint">
+                    节拍线延迟只偏移红蓝拍线的显示位置（用于对齐 osu! 编辑器画面），不影响频谱/声谱的真实时间轴。勾选「跟随软件」时滑条只读，直接采用 BPM 测速助手里校准好的值。
+                </div>
+
+                <!-- ── 跟随 osu! 与帧率（v0.8.7）── -->
+                <div class="set-sec">跟随 osu! 与帧率</div>
+                <div class="set-row">
+                    <span class="lb">平滑播放头</span>
+                    <input type="checkbox" id="cfg-ossmooth" />
+                    <span class="set-hint">跟随 osu! 时按本地时钟外推</span>
+                </div>
+                <div class="set-row sub">
+                    <span class="lb">外推上限</span>
+                    <input type="range" id="cfg-osmax" min="0" max="400" step="10" />
+                    <b id="osmax-val">200ms</b>
+                    <input type="number" class="set-num" id="cfg-osmax-num" min="0" max="400" step="10" title="直接输入外推上限毫秒" />
+                </div>
+                <div class="set-row">
+                    <span class="lb">兜底帧率</span>
+                    <select id="cfg-fallbackfps">
+                        <option value="33">30 fps（省 CPU，默认）</option>
+                        <option value="60">60 fps</option>
+                        <option value="120">120 fps</option>
+                        <option value="-1">跟随屏幕刷新率</option>
+                    </select>
+                </div>
+                <div class="set-row">
+                    <span class="lb">显示帧率诊断</span>
+                    <input type="checkbox" id="cfg-framestat" />
+                    <span class="set-hint">标题栏出现 rAF/画/兜底 三个数</span>
+                </div>
+                <div class="set-hint">
+                    osu! 的播放位置要经 tosu 与主进程两次轮询才到本窗口，天生是 100~150ms 一跳的离散值——画面每秒只前进约 10 次，看着就像被锁了帧。开启「平滑播放头」后，本窗口按自己的时钟把位置推到每一帧，位置变化从约 10 次/秒提升到每一帧一次。
+                </div>
+                <div class="set-hint" id="framestat-src">
+                    帧率诊断：rAF = 浏览器派帧速率；画 = 实际绘制速率；兜底 = 由定时器接管的绘制速率。rAF 正常时「兜底」始终为 0。
+                </div>
+            </div>
+        </div>
+        <script src="state.js"></script>
+        <script src="settings-panel.js"></script>
+    </body>
+</html>

@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta
+            http-equiv="Content-Security-Policy"
+            content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; media-src 'self' blob:"
+        />
+        <title>频谱声谱 + 变速段落</title>
+        <link rel="stylesheet" href="style.css" />
+    </head>
+    <body class="panel-body">
+        <div class="panel-wrap">
+            <div class="panel-titlebar" id="titlebar">
+                <!-- v0.8.8：原窗口名「频谱声谱 + 变速段落」按用户要求去掉，
+                     改为实时显示"当前 BPM"（= 播放头所在的那条红线） -->
+                <span class="pt-title" id="pt-title" title="当前 BPM —— 播放头所在的那条红线（由下方的变速段落卡片决定）">
+                    <b id="pt-bpm">—</b> <em>BPM</em>
+                </span>
+
+                <!-- ===== 音频控制条（黄圈位置）：时间显示 / 音乐音量 / 节拍器音量 / 节拍器开关 / 音乐变速 ===== -->
+                <div class="au-bar" id="au-bar">
+                    <span class="au-time" id="au-time" title="当前时间（本地试听时=试听时间；否则=osu! 制谱器时间）">0:00.000</span>
+
+                    <label class="au-ctl" title="音乐音量（本地试听，空格播放/暂停）">
+                        <span class="au-ico">♪</span>
+                        <input class="au-range" id="au-vol" type="range" min="0" max="100" step="1" />
+                        <span class="au-val" id="au-vol-v">80</span>
+                    </label>
+
+                    <label class="au-ctl" title="节拍器音量">
+                        <span class="au-ico">♩</span>
+                        <input class="au-range" id="au-mvol" type="range" min="0" max="100" step="1" />
+                        <span class="au-val" id="au-mvol-v">60</span>
+                    </label>
+
+                    <button class="mini-toggle" id="au-metro" title="节拍器开关：本地试听时按红线/BPM 打拍，重拍落在每小节第一拍">
+                        ♩ 节拍器
+                    </button>
+
+                    <label class="au-ctl" title="音乐变速（保持音调不变）">
+                        <span class="au-ico">⏩</span>
+                        <select class="au-sel" id="au-rate">
+                            <option value="0.5">0.50×</option>
+                            <option value="0.75">0.75×</option>
+                            <option value="1">1.00×</option>
+                            <option value="1.25">1.25×</option>
+                            <option value="1.5">1.50×</option>
+                            <option value="2">2.00×</option>
+                        </select>
+                    </label>
+                </div>
+
+                <span class="viz-status" id="viz-status">—</span>
+                <!-- v0.8.7 帧率诊断（默认隐藏，设置里勾「显示帧率诊断」才出现）：
+                     用来区分两种完全不同的"卡"：
+                       rAF 高 + 兜底 — → 是没数据可画（数据 10Hz），不是画不出来
+                       rAF 低 + 兜底 60 → rAF 真停摆，实际帧率就是兜底帧率 -->
+                <span class="frame-stat" id="frame-stat" style="display: none"
+                    title="rAF=浏览器派帧速率 · 画=实际绘制速率 · 兜底=由定时器接管的绘制速率（rAF 停摆才会出手）"
+                ></span>
+                <button
+                    class="mini-toggle on"
+                    id="btn-autofollow"
+                    title="自动翻页：播放头快到窗口右边时，自动把视图翻到下一段并提前渲染该段频谱/声谱"
+                >
+                    ⏭ 自动翻页
+                </button>
+                <button class="pin-btn" id="btn-pin" title="切换置顶（默认置顶）">📌</button>
+            </div>
+
+            <!-- ===== 上半：频谱声谱（占满剩余高度）===== -->
+            <div class="viz-container panel-viz" id="viz-container"></div>
+
+            <!-- ===== 下半：① 变速段落（左） + ② 全局偏移 / 编号 / 添加（右）===== -->
+            <div class="mg-bottom">
+                <!-- ① 变速段落选项卡：横向铺开，最底部一条左右滑条，向右无限收纳 -->
+                <section class="sec-zone">
+                    <div class="sec-head">
+                        <span class="zone-badge">①</span>
+                        <span class="sec-title">变速段落</span>
+                        <span class="sec-count" id="sec-count">0</span>
+                        <span class="sec-note" id="sec-note"
+                            >点频谱红线 → 跳到对应段落卡片 · 双击卡片 → 频谱居中</span
+                        >
+                    </div>
+                    <div class="sec-strip" id="sec-strip">
+                        <div class="empty">暂无数据</div>
+                    </div>
+                </section>
+
+                <!-- ② 全局起始偏移 / 段落编号 / 添加变速段落 -->
+                <aside class="side-zone">
+                    <div class="sz-label">
+                        <span class="zone-badge">②</span>
+                        <span>全局起始偏移（offset）</span>
+                    </div>
+                    <div class="sz-row">
+                        <input
+                            class="sz-in"
+                            id="sz-offset"
+                            type="number"
+                            step="0.001"
+                            min="0"
+                            title="全局 offset = 第一条红线的时间；改它会整体平移所有变速段落"
+                        />
+                        <span class="sz-unit">s</span>
+                    </div>
+
+                    <div class="sz-sep"></div>
+
+                    <div class="sz-label"><span>变速段落编号</span></div>
+                    <div class="sz-row">
+                        <button class="mini" id="sz-prev" title="上一个变速段落（Alt+←）">◀</button>
+                        <span class="sz-idx" id="sz-idx">— / —</span>
+                        <button class="mini" id="sz-next" title="下一个变速段落（Alt+→）">▶</button>
+                    </div>
+
+                    <div class="sz-sep"></div>
+
+                    <button
+                        class="sz-add"
+                        id="sz-add"
+                        title="在播放头位置新增一条红线（继承所在段 BPM）；双击时间轴空白处也可添加"
+                    >
+                        ＋ 添加变速段落
+                    </button>
+                    <div class="sz-row">
+                        <button class="mini" id="sz-del" title="删除选中的变速段落（Delete）">✕ 删除</button>
+                        <button class="mini" id="sz-import" title="把编辑后的 timing 导出到时间戳命名的独立文件（Ctrl+S），不写回原 .osu">
+                            ⇩ 导出 timing
+                        </button>
+                    </div>
+                    <div class="sz-row">
+                        <button class="mini" id="sz-open" title="打开 timing 导出的保存文件夹">📂 打开保存文件夹</button>
+                    </div>
+                </aside>
+            </div>
+        </div>
+        <script src="state.js"></script>
+        <script src="viz.js"></script>
+        <script src="viz-panel.js"></script>
+    </body>
+</html>

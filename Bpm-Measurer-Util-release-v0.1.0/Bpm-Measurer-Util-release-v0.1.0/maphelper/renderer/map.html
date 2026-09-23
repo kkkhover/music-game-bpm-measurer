@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta
+            http-equiv="Content-Security-Policy"
+            content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; media-src 'self' blob:"
+        />
+        <title>谱面信息</title>
+        <link rel="stylesheet" href="style.css" />
+    </head>
+    <body class="panel-body">
+        <div class="panel-wrap">
+            <div class="panel-titlebar">
+                <span class="pt-title">当前谱面</span>
+                <button class="mini" id="btn-rescan" title="重新探测 osu! 目录 / 重读谱面">重探</button>
+                <button class="pin-btn" id="btn-pin" title="切换置顶（默认置顶）">📌</button>
+            </div>
+            <div class="map-name" id="map-name">等待 osu! 打开制谱器…</div>
+            <div class="map-file" id="map-file"></div>
+            <div class="map-stats">
+                <div class="stat"><span>红线</span><b id="stat-red">0</b></div>
+                <div class="stat"><span>绿线</span><b id="stat-green">0</b></div>
+                <div class="stat"><span>一致性</span><b id="stat-sync">—</b></div>
+            </div>
+            <div class="hint" id="path-hint"></div>
+        </div>
+        <script src="state.js"></script>
+        <script src="map-panel.js"></script>
+    </body>
+</html>

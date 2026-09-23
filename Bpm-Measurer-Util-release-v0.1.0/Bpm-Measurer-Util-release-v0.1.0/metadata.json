@@ -1,0 +1,5 @@
+{
+  "name": "BPM 测速助手",
+  "description": "专业音游关卡制作专用 BPM 测量与打点工具，支持频谱图与波形图可视化。",
+  "requestFramePermissions": []
+}

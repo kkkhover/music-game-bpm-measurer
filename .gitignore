@@ -1,0 +1,94 @@
+# ============================================================================
+#  BPM 测速助手 / osu! 制谱侧栏
+#
+#  ★ 仓库里只放：**源码 + LICENSE + README + 依赖库与原理**
+#    安装包、更新日志、历史报告 一律走 GitHub Releases，不进仓库。
+#
+#  ★ 为什么必须这么写：
+#    这个目录同时是"开发工作区"——里面堆着 **65 个历史打包产物目录**
+#    （BPM测速助手_v0.2.0 ~ v0.8.15），每个 300~400MB，合计几十 GB。
+#    而且 win-unpacked 里的 "BPM 测速助手.exe" 有 **182MB**，
+#    超过 GitHub 的 100MB 单文件上限 —— 一旦入库，推送会被直接拒绝。
+# ============================================================================
+
+# ---------- 依赖（接收方用 npm ci 按 package-lock.json 装回来）----------
+node_modules/
+
+# ---------- 构建产物（都能重新生成）----------
+dist/
+dist-electron/
+dist-ssr/
+release/
+
+# ---------- 日志 / 缓存 / 备份 / 临时 ----------
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.cache/
+backups/
+_smoke-data/
+
+# ---------- 打包产物：整目录忽略 ----------
+#   ★ 安装包不进仓库 —— 它作为**附件上传到 GitHub Releases**。
+#   因此这里直接忽略整个目录，不再留任何放行例外；换版本时也不用改本文件。
+BPM测速助手_v*/
+win-unpacked/
+*.exe
+*.blockmap
+*.dmg
+*.AppImage
+
+# ---------- 只随 Releases 分发 / 本地留存，不入库的文档 ----------
+#   注：README.md 与 依赖库与原理.md **要进仓库**，故不在此列。
+更新日志.md
+v0.*-*.md
+C盘占用排查-*.md
+
+# ---------- 工作区自用的调试脚本与样例（不属于项目源码）----------
+_cdp_*.mjs
+verify_detune.mjs
+generate_timing.py
+样例-实机导出的malody谱面.mc
+
+# ---------- 工作区本地杂物 ----------
+_verify*/
+_verify-*.png
+_js_open_viz.js
+_js_reload.js
+_k84.txt
+_ls2.txt
+_malody/
+_mcz/
+_poc-osumem/
+orig_src/
+新建文件夹/
+*.zip
+
+# ---------- 项目内部笔记（含本机路径等，不公开）----------
+.workbuddy/
+
+# ---------- 侧栏历史版本目录：只留最新（v0.8.12），旧版靠 git 历史回看 ----------
+osu-maphelper_v0.8.1/
+osu-maphelper_v0.8.3/
+osu-maphelper_v0.8.4/
+osu-maphelper_v0.8.5/
+osu-maphelper_v0.8.6/
+osu-maphelper_v0.8.7/
+osu-maphelper_v0.8.8/
+osu-maphelper_v0.8.9/
+osu-maphelper_v0.8.10/
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

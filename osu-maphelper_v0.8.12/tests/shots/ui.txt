@@ -1,0 +1,1 @@
+[console:1] [viz] 容器 948x290 / 波形层 125px / 声谱层 125px(top=125) / 时间轴 40px / dpr=1 (app://renderer/viz-panel.js:564)

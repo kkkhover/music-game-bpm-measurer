@@ -1,0 +1,81 @@
+{
+  "tosu": {
+    "host": "127.0.0.1",
+    "port": 24050,
+    "pollMs": 100,
+    "autoLaunchHint": true
+  },
+  "osu": {
+    "installDir": "",
+    "songsDir": ""
+  },
+  "backup": {
+    "enabled": true,
+    "intervalMinutes": 2,
+    "keepCount": 60,
+    "dir": "",
+    "onlyWhenChanged": true,
+    "backupBeforeWrite": true,
+    "nameFormat": "YYYY-M-D-H-m"
+  },
+  "export": {
+    "dir": ""
+  },
+  "window": {
+    "width": 400,
+    "height": 940,
+    "x": null,
+    "y": null,
+    "alwaysOnTop": true,
+    "opacity": 1
+  },
+  "visual": {
+    "showWaveform": true,
+    "showSpectrogram": true,
+    "waveColor": "#a855f7",
+    "palette": "foobar",
+    "custom": [
+      "#ff2222",
+      "#ff2222",
+      "#ff2222"
+    ],
+    "peakThreshold": 0.5,
+    "peakColor": "#ffee00",
+    "invert": false,
+    "renderScale": 1,
+    "beatLineDelayFollowSoftware": true,
+    "beatLineDelayMs": 30,
+    "fftSize": 2048,
+    "sensitivity": 75,
+    "logBase": 50,
+    "autoFollow": true,
+    "osuFollowSmooth": true,
+    "osuFollowExtrapMs": 150,
+    "fallbackFps": 33,
+    "showFrameStat": false,
+    "showSpectrum": true,
+    "showTimeline": true
+  },
+  "audio": {
+    "musicVolume": 80,
+    "metroVolume": 60,
+    "metroOn": false,
+    "rate": 1
+  },
+  "layout": {
+    "order": [
+      "live",
+      "viz",
+      "map",
+      "timeline",
+      "backup",
+      "settings",
+      "log"
+    ],
+    "collapsed": []
+  },
+  "panels": {},
+  "server": {
+    "port": 24100
+  }
+}

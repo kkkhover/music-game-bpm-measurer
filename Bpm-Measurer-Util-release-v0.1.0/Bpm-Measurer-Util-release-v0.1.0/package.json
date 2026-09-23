@@ -1,0 +1,82 @@
+{
+  "name": "bpm-measurer-util",
+  "private": true,
+  "version": "0.8.15",
+  "type": "module",
+  "main": "boot.cjs",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.electron.json && tsc -p tsconfig.preload.json && vite build",
+    "preview": "vite preview",
+    "sync:maphelper": "node scripts/sync-maphelper.mjs",
+    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:3000 && electron .\"",
+    "electron:build": "npm run sync:maphelper && npm run build && electron-builder",
+    "electron:release": "npm run sync:maphelper && npm run build && electron-builder -p always"
+  },
+  "devDependencies": {
+    "@electron/fuses": "^2.1.3",
+    "@types/node": "^22.14.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.0.0",
+    "app-builder-bin": "^4.2.0",
+    "concurrently": "^9.0.0",
+    "electron": "^34.5.8",
+    "electron-builder": "^25.1.8",
+    "lucide-react": "^0.563.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0",
+    "wait-on": "^8.0.0"
+  },
+  "build": {
+    "appId": "com.bpmmeasurer.util",
+    "productName": "BPM 测速助手",
+    "asar": false,
+    "directories": {
+      "buildResources": "resources",
+      "output": "D:/tmp/新建文件夹/bpm app/BPM测速助手_v0.8.15"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "boot.cjs",
+      "maphelper/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "resources",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "mac": {
+      "target": "dmg"
+    },
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "allowElevation": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "BPM 测速助手",
+      "multiLanguageInstaller": true,
+      "installerLanguages": ["zh_CN", "en_US", "ja_JP", "ko_KR", "fr_FR", "de_DE", "es_ES", "ru_RU", "pt_BR"]
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  },
+  "dependencies": {
+    "soundtouchjs": "^0.3.0"
+  }
+}

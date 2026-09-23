@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta
+            http-equiv="Content-Security-Policy"
+            content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; media-src 'self' blob:"
+        />
+        <title>osu! 制谱侧栏</title>
+        <link rel="stylesheet" href="style.css" />
+    </head>
+    <body>
+        <div class="app" id="app-root">
+            <!-- ── 顶部状态条 ── -->
+            <header class="hd" data-panel="hd">
+                <div class="hd-title">osu! 制谱侧栏</div>
+                <div class="hd-pills">
+                    <span class="pill" id="pill-tosu"><i></i>tosu</span>
+                    <span class="pill" id="pill-osu"><i></i>osu!</span>
+                    <span class="pill" id="pill-state">—</span>
+                    <button class="mini" id="btn-back-bpm" title="返回 BPM 测速助手主界面">↩ 返回测速</button>
+                </div>
+            </header>
+
+            <!-- ── 实时播放位置 ── -->
+            <section class="card live" data-panel="live">
+                <div class="live-time">
+                    <span id="time-main">--:--.---</span>
+                </div>
+                <div class="live-sub">
+                    <span>当前 BPM</span>
+                    <b id="cur-bpm">—</b>
+                    <span class="sep">·</span>
+                    <span>总时长</span>
+                    <b id="audio-len">—</b>
+                </div>
+                <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
+                <div class="live-foot">
+                    <span id="bpm-range">—</span>
+                </div>
+            </section>
+
+            <!-- ── 谱面标题（精简）── -->
+            <section class="card" data-panel="mapmini">
+                <div class="map-name" id="map-name">等待 osu! 打开制谱器…</div>
+                <div class="map-file" id="map-file"></div>
+            </section>
+
+            <!-- ── 功能区块入口（每个打开独立窗口）── -->
+            <section class="card" data-panel="launcher">
+                <div class="card-hd"><span>功能区块</span></div>
+                <div class="launch-grid">
+                    <button class="launch" data-panel-id="viz">📊 频谱声谱 + 变速段落</button>
+                    <button class="launch" data-panel-id="map">🗺 谱面信息</button>
+                    <button class="launch" data-panel-id="backup">💾 自动备份</button>
+                    <button class="launch" data-panel-id="settings">⚙ 设置</button>
+                    <button class="launch" data-panel-id="log">📜 日志</button>
+                </div>
+            </section>
+
+            <!-- ── 未保存提示 / 导出 timing + 打开文件夹 ── -->
+            <section class="card" data-panel="applymini">
+                <div class="apply-bar" id="apply-bar">
+                    <span id="apply-info">未修改</span>
+                    <button class="btn primary" id="btn-apply" disabled>导出 timing</button>
+                </div>
+                <div class="apply-folders">
+                    <button class="mini" id="btn-open-export" title="打开 timing 导出的保存文件夹">📂 打开保存文件夹</button>
+                    <button class="mini" id="btn-open-backup" title="打开定时备份文件夹">🗂 打开备份文件夹</button>
+                </div>
+            </section>
+        </div>
+        <script src="state.js"></script>
+        <script src="main.js"></script>
+    </body>
+</html>

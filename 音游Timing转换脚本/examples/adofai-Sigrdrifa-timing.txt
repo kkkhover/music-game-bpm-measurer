@@ -1,0 +1,377 @@
+// ================================================
+// Sigrdrifa - ADOFAI Timing 数据
+// 使用说明 (How to use):
+//   1. 复制 actions 数组（SetSpeed 事件）替换 .adofai 谱面对应字段；
+//   2. 同时替换 settings.bpm 与 settings.offset；pathData 需换成实际路径（默认为最小直路 R）。
+// 以上 // 注释行为提示，替换进谱面文件时请勿复制。
+// ================================================
+{
+  "settings": {
+    "version": 6,
+    "artist": "",
+    "song": "Sigrdrifa",
+    "bpm": 182.0,
+    "offset": 488,
+    "beat": 0,
+    "zoom": 1,
+    "trackColor": "#debb7b",
+    "trackColor2": "#6f4a21",
+    "trackDisappearAnimation": "None",
+    "countdownTicks": 2,
+    "noteLines": 0,
+    "pitch": 100,
+    "tolerance": 50,
+    "volume": 100,
+    "backgroundColor": "#ff0000",
+    "planetColor": "#00ff00"
+  },
+  "actions": [
+    {
+      "floor": 695,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 180.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 697,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 178.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 698,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 175.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 699,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 168.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 701,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 163.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 702,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 160.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 703,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 156.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 704,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 153.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 705,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 152.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 706,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 146.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 707,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 143.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 708,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 142.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 709,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 133.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 710,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 197.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 711,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 105.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 712,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 262.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 713,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 271.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 721,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 193.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 726,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 270.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 766,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 262.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 768,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 268.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 769,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 258.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 770,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 248.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 771,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 250.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 772,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 246.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 774,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 240.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 775,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 236.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 778,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 243.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 782,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 238.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 783,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 240.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 840,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 182.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 873,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 115.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 874,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 165.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 987,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 172.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 988,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 165.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 1068,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 247.5,
+      "angleOffset": 0
+    },
+    {
+      "floor": 1116,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 165.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 1203,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 160.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 1206,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 152.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 1209,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 147.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 1212,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 140.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 1215,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 134.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 1218,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 127.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 1221,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 110.5,
+      "angleOffset": 0
+    },
+    {
+      "floor": 1259,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 182.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 1336,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 95.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 1339,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 168.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 1344,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 195.0,
+      "angleOffset": 0
+    },
+    {
+      "floor": 1345,
+      "eventType": "SetSpeed",
+      "speedType": "Bpm",
+      "beatsPerMinute": 182.0,
+      "angleOffset": 0
+    }
+  ],
+  "pathData": "R",
+  "angleData": [
+    0
+  ]
+}

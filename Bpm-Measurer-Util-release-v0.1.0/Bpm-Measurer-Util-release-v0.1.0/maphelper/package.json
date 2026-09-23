@@ -1,0 +1,23 @@
+{
+  "name": "osu-maphelper",
+  "version": "0.8.12",
+  "private": true,
+  "type": "module",
+  "description": "osu!stable 制谱侧栏 —— 频谱声谱 + 变速段落（合并窗口：红线 timing 卡片 / 全局 offset / 快捷添加编辑）+ 节拍线延迟跟随 BPM 测速助手 + 反降频（挂载窗口切进游戏全屏不掉帧）+ 跟随 osu! 播放头平滑（本地外推，消除 100ms 一跳的顿挫）+ 可调兜底帧率 + 帧率诊断 + tosu 实时播放位置 + 定时备份",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "side": "node scripts/launch.mjs",
+    "shot": "node scripts/launch.mjs --screenshot",
+    "test": "node tests/selftest.mjs",
+    "test:ui": "node tests/ui_contract.mjs",
+    "test:live": "node tests/live_check.mjs",
+    "test:all": "node tests/selftest.mjs && node tests/ui_contract.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "electron": "^34.5.8"
+  }
+}

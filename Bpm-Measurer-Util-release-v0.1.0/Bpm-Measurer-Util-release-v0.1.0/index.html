@@ -1,0 +1,52 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BPM 测速助手</title>
+    <!--
+      Tailwind 用**随包发布的本地副本**，不依赖网络。
+      原来是 <script src="https://cdn.tailwindcss.com">：断网时这个脚本根本下不下来，
+      而界面所有样式（全部是 Tailwind 工具类）都靠它 —— 结果整个 UI 错乱/看不清，
+      表现就是"没连网就显示不正常"。
+      本地文件 = public/tailwind-play.js（vite 会原样拷到 dist/ 根目录，随安装包一起发），
+      它是 Tailwind 官方 Play CDN 的构建产物（MIT），运行时扫描 DOM 生成样式，行为与原来完全一致。
+    -->
+    <script src="/tailwind-play.js"></script>
+    <style>
+      body {
+        background-color: #0f0f0f;
+        color: #e0e0e0;
+        overflow: hidden; /* App handles scrolling */
+      }
+      /* Custom scrollbar for the timeline container if needed */
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #1a1a1a;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #444;
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #555;
+      }
+    </style>
+    <!--
+      原来这里还有一份 importmap，把 react / react-dom / lucide-react 指向 esm.sh。
+      实际上 vite build 早就把它们从 node_modules 打进 assets/index-*.js 了
+      （产物里查不到任何 esm.sh 引用），这份 importmap 属于死代码；
+      但留着它等于给"离线运行"留了个隐患 —— 万一将来出现裸模块导入，
+      就会去网上取包然后失败。所以直接删掉，彻底不依赖网络。
+    -->
+    <link rel="stylesheet" href="./index.css">
+</head>
+  <body>
+    <div id="root"></div>
+  <script type="module" src="./index.tsx"></script>
+</body>
+</html>
