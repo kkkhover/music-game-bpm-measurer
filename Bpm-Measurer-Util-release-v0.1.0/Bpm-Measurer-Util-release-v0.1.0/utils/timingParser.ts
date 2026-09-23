@@ -13,7 +13,7 @@
 export interface ParsedTimingConfig {
   offset: number;          // 秒
   // timeSec：红线绝对时间（秒，v0.7.18 起的权威位置值）；缺省则由 beatIndex + 上一段 BPM 推算
-  points: { beatIndex: number; bpm: number; sv?: boolean; svRate?: number; timeSec?: number }[];
+  points: { beatIndex: number; bpm: number; meter?: number; sv?: boolean; svRate?: number; timeSec?: number }[];
 }
 
 /** 文本规范化（读取优化）：去掉 UTF-8 BOM + 统一换行为 \n（兼容 CRLF / CR / 尾随空白） */
@@ -97,7 +97,7 @@ function parseOsu(content: string): ParsedTimingConfig | null {
   const sectionEnd = body.search(/\[[A-Za-z]+\]/); // 遇到下一个节停止（如 [HitObjects]）
   if (sectionEnd !== -1) body = body.slice(0, sectionEnd);
 
-  interface Raw { offsetMs: number; beatLength: number; uninherited: boolean }
+  interface Raw { offsetMs: number; beatLength: number; uninherited: boolean; meter: number }
   const raw: Raw[] = [];
   for (const line of body.split('\n')) {
     const t = line.trim();
@@ -109,7 +109,9 @@ function parseOsu(content: string): ParsedTimingConfig | null {
     if (!isFinite(offsetMs) || !isFinite(beatLength) || beatLength === 0) continue;
     // uninherited：第 7 字段（索引6）；缺省=红线（uninherited=1）
     const uninherited = parts.length >= 7 ? parseInt(parts[6]) === 1 : beatLength > 0;
-    raw.push({ offsetMs, beatLength, uninherited });
+    // ★ v0.8.17：meter（拍号）= 第 3 字段（索引2），如 4=4/4、3=3/4；缺省/非法回退 4
+    const meter = parts.length >= 3 ? parseInt(parts[2]) : 4;
+    raw.push({ offsetMs, beatLength, uninherited, meter: isFinite(meter) && meter > 0 ? meter : 4 });
   }
   if (raw.length === 0) return null;
   raw.sort((a, b) => a.offsetMs - b.offsetMs);
@@ -132,9 +134,10 @@ function parseOsu(content: string): ParsedTimingConfig | null {
   for (const r of raw) {
     if (r.uninherited) {
       const bpm = Math.round((60000 / Math.max(1e-6, r.beatLength)) * 100) / 100;
-      const pt: { beatIndex: number; bpm: number; sv?: boolean; svRate?: number; timeSec?: number } = {
+      const pt: { beatIndex: number; bpm: number; meter?: number; sv?: boolean; svRate?: number; timeSec?: number } = {
         beatIndex: r === firstRed ? 0 : lastIndex, // 占位，下面按分支重算
         bpm,
+        meter: r.meter, // ★ v0.8.17：从谱面读回拍号
         sv: true,
         timeSec: msToSec(r.offsetMs),
       };

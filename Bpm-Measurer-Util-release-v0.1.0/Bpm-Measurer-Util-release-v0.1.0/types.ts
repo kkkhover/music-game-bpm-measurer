@@ -9,6 +9,8 @@ export interface TimingPoint {
   beatIndex: number; // The global beat count where this section starts
   bpm: number;       // The tempo of this section
   time: number;      // Calculated absolute time (seconds)
+  meter?: number;    // 拍号（每小节几拍，osu! 的 meter，如 4=4/4 拍、3=3/4 拍），默认 4
+                     // v0.8.17 新增：决定这一段的小节线/重音分组，导出时写进 [TimingPoints] 第 3 字段
   sv?: boolean;      // 导出 osu! 时是否生成变速绿线（inherited point），默认 true
   svRate?: number;   // 绿线自定义倍速（0/空 = 按基准BPM自动计算；如 1.5 / 0.75）
   timeSec?: number;  // 红线绝对时间（秒，v0.7.18 起为红线位置的权威值）：

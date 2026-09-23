@@ -675,7 +675,7 @@
         return `<div class="sec-card${sec.anchor ? ' anchor' : ''}" data-i="${i}" title="${title}">
             <div class="sc-top">
                 <span class="sc-no">${sec.anchor ? '起点锚点' : '#' + (i + 1)}</span>
-                <span class="sc-beat">拍 ${sec.beatIndex} · ${sec.meter}/4</span>
+                <span class="sc-beat">拍 ${sec.beatIndex} · 拍号 <input class="f-meter" type="number" step="1" min="1" max="64" value="${sec.meter}" title="拍号（每小节几拍，4=4/4、3=3/4；分母固定为 4 分音符）" />/4</span>
                 ${sec.anchor ? '' : '<button class="sc-del" title="删除这个变速段落">✕</button>'}
             </div>
             <div class="sc-f">
@@ -722,6 +722,8 @@
         bpm.addEventListener('change', () => editBpm(i, Number(bpm.value)));
         const time = el.querySelector('.f-time');
         time.addEventListener('change', () => editTime(i, Number(time.value)));
+        const meter = el.querySelector('.f-meter');
+        if (meter) meter.addEventListener('change', () => editMeter(i, Number(meter.value)));
 
         const del = el.querySelector('.sc-del');
         if (del) del.addEventListener('click', (e) => { e.stopPropagation(); deleteSection(i); });
@@ -892,6 +894,22 @@
         const s = secs[i];
         pushUndo(''); // 删除是离散动作 → 每次单独一步，不合并
         postEdit({ type: 'delete', redIndex: i }, `已删除 ${s ? fmtSec(s.time) : ''} 处的变速段落`);
+    }
+
+    /**
+     * ★ v0.8.17：改拍号（meter）—— 每小节几拍（4 = 4/4、3 = 3/4）。
+     * 只影响小节线分组与节拍器重音，**不改变红线位置**（红线位置仍由 time 决定）。
+     */
+    function editMeter(i, v) {
+        const m = Math.round(Number(v));
+        if (!Number.isFinite(m) || m < 1 || m > 64) {
+            flashHint('拍号需为 1~64 的整数');
+            cardsSig = '';
+            renderSections();
+            return;
+        }
+        pushUndo('meter:' + i); // 同一个输入框连续改 → 合并成一步
+        postEdit({ type: 'meter', redIndex: i, meter: m }, `第 ${i + 1} 段拍号 → ${m}/${m}`);
     }
 
     function addSection() {

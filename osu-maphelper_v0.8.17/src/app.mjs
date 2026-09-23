@@ -477,6 +477,12 @@ export function createApp() {
             if (edit.redIndex < 0 || edit.redIndex >= reds.length) return { ok: false, error: '下标越界' };
             reds[edit.redIndex].bpm = edit.bpm;
             reds[edit.redIndex].beatLength = 60000 / edit.bpm;
+        } else if (edit.type === 'meter') {
+            // ★ v0.8.17：改拍号（每小节几拍）——只影响小节线/节拍器分组，不改红线位置
+            if (edit.redIndex < 0 || edit.redIndex >= reds.length) return { ok: false, error: '下标越界' };
+            const m = Math.round(Number(edit.meter));
+            if (!Number.isFinite(m) || m < 1 || m > 64) return { ok: false, error: '拍号需为 1~64 的整数' };
+            reds[edit.redIndex].meter = m;
         } else if (edit.type === 'add') {
             // ★ v0.8.10 修正：新增红线**严格按拍编号**落在「上一条红线的下一拍」
             //   （拍号 = src 拍号 + 1），实现见 timingEdit.planAddRedLine：

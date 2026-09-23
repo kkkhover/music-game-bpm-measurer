@@ -1151,8 +1151,10 @@
                         ctx.lineTo(x - 5, arrowY0 + 8);
                         ctx.lineTo(x + 5, arrowY0 + 8);
                         ctx.fill();
-                        // 每 4 拍标一次全局拍号；与红线重合处不标（避免文字重叠）
-                        if (relIndex % 4 === 0 && !sectionStartSet.has(Math.round((time + delay) * 1000))) {
+                        // ★ v0.8.17：按该段的拍号（meter）标小节号（默认 4 拍一小节）；
+                        //   与红线重合处不标（避免文字重叠）。改拍号后这里会跟着变。
+                        const meter = Number(p.meter) > 0 ? Math.round(Number(p.meter)) : 4;
+                        if (relIndex % meter === 0 && !sectionStartSet.has(Math.round((time + delay) * 1000))) {
                             ctx.fillStyle = '#00f2ff';
                             ctx.fillText(String(beatIndex), x, arrowY0 + 22);
                         }

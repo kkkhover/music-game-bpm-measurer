@@ -15,6 +15,7 @@ export function roundHalfUp(x: number, digits: number = 2): number {
 export interface OsuPointInput {
   beatIndex: number;
   bpm: number;
+  meter?: number;  // ★ v0.8.17：拍号（每小节几拍），默认 4；写进 [TimingPoints] 第 3 字段
   sv?: boolean;   // 是否生成变速绿线（inherited point），默认 true
   svRate?: number; // 绿线自定义倍速（0/空 = 按基准BPM自动计算）
   timeSec?: number; // 红线绝对时间（秒）—— 权威值：有则红线位置只由它决定（改 BPM 不会挪动下一条红线）
@@ -65,16 +66,18 @@ export function generateOsuTimingPoints(
     const bpm = sorted[i].bpm;
     const beatLen = 60000.0 / bpm;
     const t = Math.round(times[i]);
+    // ★ v0.8.17：拍号（meter）不再硬编码 4，改用该段自己的 meter（默认 4）
+    const meter = sorted[i].meter && sorted[i].meter! > 0 ? Math.round(sorted[i].meter!) : 4;
 
     // 完整输出（v0.7.20）：每一条红线都写一条 timing point，**不做任何合并 / 冗余剔除**
     // —— 导出后的红线数量与软件里完全一致，位置一一对应
-    out.push(`${t},${beatLen.toFixed(12)},4,1,0,72,1,0`);
+    out.push(`${t},${beatLen.toFixed(12)},${meter},1,0,72,1,0`);
 
     // 绿线：流速 SV = 自定义倍速（svRate>0）或 基准bpm/当前bpm（四舍五入两位）
     // 默认每条红线后都跟一条绿线；该段关闭绿线（sv === false）时不输出
     if (sorted[i].sv !== false) {
       const green = -100.0 / svValueOf(sorted[i], baseBpm);
-      out.push(`${t},${green.toFixed(12)},4,1,0,72,0,0`);
+      out.push(`${t},${green.toFixed(12)},${meter},1,0,72,0,0`);
     }
   }
 

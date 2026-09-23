@@ -26,7 +26,7 @@ interface TimingRowProps {
     point: TimingPoint;
     index: number;
     totalCount: number;
-    onUpdate: (id: string, field: 'bpm' | 'beatIndex' | 'sv' | 'svRate', value: number | boolean) => void;
+    onUpdate: (id: string, field: 'bpm' | 'beatIndex' | 'sv' | 'svRate' | 'meter', value: number | boolean) => void;
     onRemove: (id: string) => void;
     onUpdateTime: (id: string, time: number) => void; // 修改该红线的时间戳（秒）
     onJumpToTime?: (sec: number) => void; // 双击卡片 → 时间轴跳转到该红线位置
@@ -37,6 +37,7 @@ const TimingRow: React.FC<TimingRowProps> = ({ point, index, totalCount, onUpdat
     const [bpmStr, setBpmStr] = useState(point.bpm.toFixed(2));
     const [beatStr, setBeatStr] = useState(point.beatIndex.toString());
     const [timeStr, setTimeStr] = useState(point.time.toFixed(3));
+    const [meterStr, setMeterStr] = useState(String(point.meter ?? 4));
 
     useEffect(() => {
         if (Math.abs(parseFloat(bpmStr) - point.bpm) > 0.001) {
@@ -55,6 +56,14 @@ const TimingRow: React.FC<TimingRowProps> = ({ point, index, totalCount, onUpdat
             setTimeStr(point.time.toFixed(3));
         }
     }, [point.time]);
+
+    // 拍号（meter）变化时同步输入框（默认 4）
+    useEffect(() => {
+        const m = point.meter ?? 4;
+        if (parseInt(meterStr, 10) !== m) {
+            setMeterStr(String(m));
+        }
+    }, [point.meter]);
 
     // 时间戳提交：直接改这条红线的时间（起点锚点 = 全局 Offset）
     const handleBlurTime = () => {
@@ -86,6 +95,17 @@ const TimingRow: React.FC<TimingRowProps> = ({ point, index, totalCount, onUpdat
              setBeatStr(val.toString());
         } else {
              setBeatStr(point.beatIndex.toString());
+        }
+    };
+
+    // 拍号提交：整数、至少 1（osu! 的 meter 语义 = 每小节几拍）
+    const handleBlurMeter = () => {
+        const val = parseInt(meterStr, 10);
+        if (!isNaN(val) && val >= 1) {
+            onUpdate(point.id, 'meter', val);
+            setMeterStr(String(val));
+        } else {
+            setMeterStr(String(point.meter ?? 4));
         }
     };
 
@@ -153,6 +173,25 @@ const TimingRow: React.FC<TimingRowProps> = ({ point, index, totalCount, onUpdat
                         onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
                         className="w-full bg-[var(--bg)] border border-[var(--line2)] rounded-lg px-3 py-2 text-sm text-[var(--accent2)] font-mono focus:outline-none focus:border-[var(--accent2)]"
                     />
+                </div>
+            </div>
+
+            {/* ★ v0.8.17：拍号（meter）—— 可读可改，参考 osu! 制谱器的拍号设置。
+                meter 语义 = 每小节几拍（分母固定为四分音符），如 4=4/4、3=3/4、7=7/4 */}
+            <div className="mt-3">
+                <label className="text-[10px] text-[var(--t4)] block mb-1 uppercase font-bold">{t('meterLabel')}</label>
+                <div className="flex items-center gap-1.5">
+                    <input
+                        type="number"
+                        step="1" min="1" max="64"
+                        value={meterStr}
+                        onChange={(e) => setMeterStr(e.target.value)}
+                        onBlur={handleBlurMeter}
+                        onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+                        title={t('meterHint')}
+                        className="w-full bg-[var(--bg)] border border-[var(--line2)] rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-[var(--accent)]"
+                    />
+                    <span className="text-[var(--t4)] font-mono text-sm shrink-0">/4</span>
                 </div>
             </div>
             
@@ -462,13 +501,14 @@ function App() {
             id: crypto.randomUUID(),
             beatIndex: last.beatIndex + 1,
             bpm: last.bpm, // 暂时继承前一条红线的 BPM
+            meter: last.meter ?? 4, // ★ v0.8.17：继承上一段的拍号（默认 4/4）
             sv: true,
             timeSec: newTime,
         }];
     });
   }, [timingPoints]);
 
-  const handleUpdatePoint = useCallback((id: string, field: 'bpm' | 'beatIndex' | 'sv' | 'svRate', value: number | boolean) => {
+  const handleUpdatePoint = useCallback((id: string, field: 'bpm' | 'beatIndex' | 'sv' | 'svRate' | 'meter', value: number | boolean) => {
       const idx = timingPoints.findIndex(tp => tp.id === id);
       const cur = idx >= 0 ? timingPoints[idx] : null;
       // 改 BPM 时：把「下一条红线」的当前位置固化成绝对时间 → 这次 BPM 变化不会挪动它
@@ -487,6 +527,11 @@ function App() {
           // 绿线开关
           if (field === 'sv') {
               return { ...p, sv: value as boolean };
+          }
+          // 拍号（meter）：整数、至少 1（只影响小节线/节拍器分组，不改变红线位置）
+          if (field === 'meter') {
+              const m = Math.max(1, Math.min(64, Math.round(value as number)));
+              return { ...p, meter: m };
           }
           // 改 BPM：只改变这条红线下方的蓝线间距（红线位置由绝对时间决定，不会挪动下一条红线）
           if (field === 'bpm') {
@@ -574,7 +619,7 @@ function App() {
           version: "1.0",
           offset: globalOffset,
           // timeSec = 红线绝对时间（秒）：带上它，重新导入后红线位置/独立关系（改 BPM 不挪动）100% 保留
-          points: rawPoints.map(p => ({ beatIndex: p.beatIndex, bpm: p.bpm, sv: p.sv !== false, svRate: p.svRate, timeSec: p.timeSec }))
+          points: rawPoints.map(p => ({ beatIndex: p.beatIndex, bpm: p.bpm, meter: p.meter ?? 4, sv: p.sv !== false, svRate: p.svRate, timeSec: p.timeSec }))
       };
       const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -600,6 +645,7 @@ function App() {
                       id: crypto.randomUUID(),
                       beatIndex: p.beatIndex,
                       bpm: p.bpm,
+                      meter: typeof p.meter === 'number' && p.meter > 0 ? p.meter : 4, // ★ v0.8.17：读回拍号
                       sv: p.sv !== false, // 默认开启绿线
                       svRate: p.svRate && p.svRate > 0 ? p.svRate : 0,
                       timeSec: typeof p.timeSec === 'number' && isFinite(p.timeSec) ? p.timeSec : undefined, // 红线绝对时间
