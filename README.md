@@ -15,10 +15,11 @@
 
 | 层 | 项目 · 作者 | 链接 | 许可 |
 |---|---|---|---|
-| ① 原项目 | **Bpm-Measurer** · CMYC4237（B 站 **@CMYC_4237**） | https://github.com/CMYC4237/Bpm-Measurer | Apache-2.0 |
-| ① 讲解视频 | **BV1n9XPB7Eyb** | https://www.bilibili.com/video/BV1n9XPB7Eyb | — |
-| ② Electron 打包版 | **Bpm-Measurer-Util** · **iExploder** | https://github.com/iExploder/Bpm-Measurer-Util | Apache-2.0 |
-| ③ 本仓库 | **music-game-bpm-measurer** · kkkhover | https://github.com/kkkhover/music-game-bpm-measurer | Apache-2.0 |
+| ① 本项目讲解视频 | - | - |
+| ② 原项目 | **Bpm-Measurer** · CMYC4237（B 站 **@CMYC_4237**） | https://github.com/CMYC4237/Bpm-Measurer | Apache-2.0 |
+| ③ 原项目讲解视频 | **BV1n9XPB7Eyb** | https://www.bilibili.com/video/BV1n9XPB7Eyb | — |
+| ④ Electron 打包版 | **Bpm-Measurer-Util** · **iExploder** | https://github.com/iExploder/Bpm-Measurer-Util | Apache-2.0 |
+| ⑤ 本仓库 | **music-game-bpm-measurer** · kkkhover | https://github.com/kkkhover/music-game-bpm-measurer | Apache-2.0 |
 
 - **许可：Apache License 2.0**（继承上游，**不是 MIT**）。许可全文见 [`LICENSE`](LICENSE)；
   三代来源与版权声明见 [`NOTICE`](NOTICE)。
