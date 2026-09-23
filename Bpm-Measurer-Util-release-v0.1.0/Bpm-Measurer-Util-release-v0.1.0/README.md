@@ -6,6 +6,14 @@
 
 本项目为原项目的Electron打包，打包环境由Qwen3 Coder Next构建。
 
+> **本仓库（kkkhover/music-game-bpm-measurer）的来源链**：
+> ① 原项目 —— [CMYC4237/Bpm-Measurer](https://github.com/CMYC4237/Bpm-Measurer)（讲解视频 **BV1n9XPB7Eyb**，
+> https://www.bilibili.com/video/BV1n9XPB7Eyb）→
+> ② Electron 打包版 —— [iExploder/Bpm-Measurer-Util](https://github.com/iExploder/Bpm-Measurer-Util)（即本目录的上游，
+> 目录名 `Bpm-Measurer-Util-release-v0.1.0` 来源于此）→
+> ③ 本仓库 —— 在 ② 之上继续开发（osu! 制谱侧栏、9 语言界面、频谱/声谱与内存优化、多游戏 timing 导出等）。
+> **三代均为 Apache License 2.0**，完整声明见仓库根目录的 `LICENSE`。
+
 ## 功能特性
 
 - 音频波形和频谱可视化
@@ -168,4 +176,7 @@ dist/
 
 ## 许可证
 
-MIT
+Apache License 2.0
+
+继承上游许可（原项目 CMYC4237/Bpm-Measurer 与其 Electron 版 iExploder/Bpm-Measurer-Util 均为 Apache-2.0）。
+完整的三代版权声明与许可全文见仓库根目录的 `LICENSE`。

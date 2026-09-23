@@ -5,6 +5,30 @@
 
 ---
 
+## 致谢与许可
+
+> **本项目是衍生作品**，并非从零原创。原始作者与上游作者的**版权与许可一律保留**。
+
+本项目源自 **@CMYC_4237** 的开源项目；**@iExploder** 将其打包成 Electron 版并构建了 release；
+本仓库在二者之上继续开发与扩展。
+
+| 层 | 项目 · 作者 | 链接 | 许可 |
+|---|---|---|---|
+| ① 原项目 | **Bpm-Measurer** · CMYC4237（B 站 **@CMYC_4237**） | https://github.com/CMYC4237/Bpm-Measurer | Apache-2.0 |
+| ① 讲解视频 | **BV1n9XPB7Eyb** | https://www.bilibili.com/video/BV1n9XPB7Eyb | — |
+| ② Electron 打包版 | **Bpm-Measurer-Util** · **iExploder** | https://github.com/iExploder/Bpm-Measurer-Util | Apache-2.0 |
+| ③ 本仓库 | **music-game-bpm-measurer** · kkkhover | https://github.com/kkkhover/music-game-bpm-measurer | Apache-2.0 |
+
+- **许可：Apache License 2.0**（继承上游，**不是 MIT**）。完整的三代版权声明与许可全文见 [`LICENSE`](LICENSE)。
+- 上游原项目的自述：*"这是一个 BPM 测量器，用于手工精确测量歌曲的 BPM，来用于你的音乐游戏关卡中。可以测量存在变速的歌曲。"*
+- 本仓库在两位上游作者工作之上新增的部分：osu! 制谱侧栏（`osu-maphelper_v*/`）、9 语言界面、
+  频谱/声谱与内存优化、多游戏 timing 导出等。
+- 侧栏的 osu! 实时数据来自 **[tosu](https://github.com/tosuapp/tosu)**（第三方，非本软件组件）。
+- Malody → osu! 的谱面转换参考 **[Jakads/malody2osu](https://github.com/Jakads/malody2osu)**。
+- 随包使用的第三方库各自遵循其许可证，详见 `依赖库与原理.md`。
+
+---
+
 ## 0. 关于这个仓库
 
 **本仓库包含源码 + `LICENSE` + 这份 README + `依赖库与原理.md`**。
@@ -344,16 +368,8 @@ node tests/ui_contract.mjs         # UI 契约测试
 
 | 文件 | 内容 |
 |---|---|
+| `LICENSE` | **许可证与来源声明**（三代版权 + Apache-2.0 全文） |
 | `更新日志.md` | 历代版本**提出的问题 / 修复 / 新增**（含总表） |
 | `依赖库与原理.md` | 依赖库清单（含许可证）+ 关键功能实现原理 |
 | `源码/主程序/README.md` | 主程序源码侧说明（构建、打包、双模式入口细节） |
 | `源码/侧栏/README.md` | 侧栏源码侧说明 |
-
----
-
-## 10. 致谢与许可
-
-- 原始 BPM 测速器由 **[CMYC4237](https://github.com/CMYC4237)** 开发；本 Electron 版在其基础上重构与扩展。
-- 侧栏的 osu! 实时数据来自 **[tosu](https://github.com/tosuapp/tosu)**（第三方，非本软件组件）。
-- Malody → osu! 的谱面转换参考 **[Jakads/malody2osu](https://github.com/Jakads/malody2osu)**。
-- 本项目以 **MIT** 许可发布；随包使用的第三方库各自遵循其许可证（详见 `依赖库与原理.md`）。
