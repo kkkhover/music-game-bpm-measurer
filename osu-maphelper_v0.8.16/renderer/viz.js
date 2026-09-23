@@ -1421,7 +1421,15 @@
                     } else {
                         // 蓝线 → 改该段 BPM（同时选中该段红线，编辑栏可对照）
                         this.selectRed(best.index);
-                        this.dragging = { type: 'bpm', redIndex: best.index, beats, startX: mx, initialVal: reds[best.index].bpm };
+                        // ★ v0.8.16 修真 bug（用户报「侧栏的红线可以拖动，但是蓝线不能拖动改变 BPM」）：
+                        //   这里原来写的是对象简写 `beats` —— 但 beats 是上面 for 循环里的
+                        //   `const beats`，出了循环就不可见，于是这一行抛
+                        //   ReferenceError: beats is not defined，整个 mousedown 处理中断：
+                        //     · dragging 没被赋值 → 蓝线拖不动；
+                        //     · 连后面的 panState 也一起没设（fall-through 被打断）→ 那一按彻底没反应。
+                        //   红线走的是上面两个分支（不碰这行），所以表现正是"红线能拖、蓝线不能"。
+                        //   正确写法是取候选对象上的 best.beats。
+                        this.dragging = { type: 'bpm', redIndex: best.index, beats: best.beats, startX: mx, initialVal: reds[best.index].bpm };
                     }
                     return;
                 }

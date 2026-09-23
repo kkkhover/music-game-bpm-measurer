@@ -45,6 +45,8 @@
     "renderScale": 1,
     "beatLineDelayFollowSoftware": true,
     "beatLineDelayMs": 30,
+    "langFollow": true,
+    "lang": "zh",
     "fftSize": 2048,
     "sensitivity": 75,
     "logBase": 50,

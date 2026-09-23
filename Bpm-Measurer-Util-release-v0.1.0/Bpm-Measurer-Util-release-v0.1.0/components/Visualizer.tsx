@@ -32,6 +32,10 @@ interface VisualizerProps {
   specSensitivity: number; // 频谱显示灵敏度（dB 阈值，60~120，越小越敏感）
   beatLineDelaySec: number; // 红线节拍线延迟补偿（秒，±由用户微调）：仅偏移刻度显示位置，不影响频谱/声谱时间轴
   onUpdateSectionTime?: (id: string, sec: number) => void; // 拖动红色段起点 → 直接改该红线的绝对时间戳（红线位置独立）
+  // ★ v0.8.16 新增（修 Bug 4：红线离开窗口自动跟随）：
+  followPlayhead: boolean;      // 播放时自动跟随播放头（视区跟随滚动）
+  isPlayingRef: React.MutableRefObject<boolean>; // 实时播放状态（不经过 React 渲染，供 rAF 循环读取）
+  onAutoScroll: (scrollLeft: number) => void; // 跟随滚动时回写新的 scrollLeft（由 App 统一持有 viewState）
 }
 
 // FFT 采样点数不再固定：由设置 specFFTSize 控制（1024~8192，越大频率分辨率越高）
@@ -62,6 +66,9 @@ const Visualizer: React.FC<VisualizerProps> = ({
   specSensitivity,
   beatLineDelaySec,
   onUpdateSectionTime,
+  followPlayhead,
+  isPlayingRef,
+  onAutoScroll,
 }) => {
   const waveformRef = useRef<HTMLCanvasElement>(null);
   const spectrogramRef = useRef<HTMLCanvasElement>(null);
@@ -217,6 +224,8 @@ const Visualizer: React.FC<VisualizerProps> = ({
     const last = waveLastRef.current;
     const sameParams = last && last.zoom === viewState.zoom && last.waveColor === waveColor
         && last.w === intWidth && last.h === waveHeight;
+    // ★ v0.8.16：参数与滚动位置都没变 → 直接返回（避免跟随滚动时对静止画面重复绘制）
+    if (last && sameParams && last.scrollLeft === viewState.scrollLeft) return;
     const dx = last ? Math.round(last.scrollLeft - viewState.scrollLeft) : 0;
 
     if (sameParams && dx !== 0 && Math.abs(dx) < intWidth) {
@@ -362,6 +371,11 @@ const Visualizer: React.FC<VisualizerProps> = ({
         && last.peakThreshold === peakThreshold && last.peakColor === peakColor && last.specInvert === specInvert
         && last.specSensitivity === specSensitivity
         && last.w === intWidth && last.h === specHeight;
+    // ★ v0.8.16 修 Bug 3（频谱帧率过低）：加"完全相同就跳过"的短路。
+    //   本 effect 依赖数组里有 viewState / specData 等，而 viewState 在播放跟随滚动时每帧都在变、
+    //   specData 在整曲预计算完成时会再触发一次 —— 旧写法每次都要走完一整套比较/清缓存/重绘判断，
+    //   参数没变时还要白跑一遍。这里用签名做零成本短路，参数与滚动位置都相同就直接返回。
+    if (last && sameParams && last.scrollLeft === viewState.scrollLeft) return;
     // 参数（对数刻度/配色/尺寸等）变化时旧缓存列作废——否则重绘会命中旧参数的缓存列，
     // 导致「对数比例滑条失效」等改了不生效的问题（缓存键只有 sampleIdx，必须显式清空）
     if (!sameParams) specCacheRef.current.clear();
@@ -518,6 +532,8 @@ const Visualizer: React.FC<VisualizerProps> = ({
 
     const last = overlayLastRef.current;
     const sameParams = last && last.zoom === viewState.zoom && last.w === intWidth && last.h === intHeight && last.delay === beatLineDelaySec;
+    // ★ v0.8.16：同频谱层，参数与滚动位置都没变就直接返回（避免跟随滚动时白重绘整层拍线）
+    if (last && sameParams && last.scrollLeft === viewState.scrollLeft) return;
     const dx = last ? Math.round(last.scrollLeft - viewState.scrollLeft) : 0;
 
     if (sameParams && dx !== 0 && Math.abs(dx) < intWidth) {
@@ -545,6 +561,20 @@ const Visualizer: React.FC<VisualizerProps> = ({
   const getPlayheadTimeRef = useRef(getPlayheadTime);
   getPlayheadTimeRef.current = getPlayheadTime;
   const lastPlayheadXRef = useRef(-1);
+
+  // ★ v0.8.16 修 Bug 4（红线离开窗口不跟随）：把「自动跟随滚动」并入播放头 rAF 循环。
+  //   参照侧栏 renderer/viz.js 的 _followPlayhead() 方案，但这里**必须多一层"只在播放中跟随"的判定**：
+  //   侧栏用「时间有没有变」推断是否在播放，而主程序 stop() 之后 getPlayheadTime() 仍返回停在原地的
+  //   当前时间（不做归零），若照搬侧栏写法，"暂停后拖动滚动条"会被误判成播放、一帧就被拽回去。
+  //   → 因此播放状态改由 App 侧的 isPlayingRef 显式传入，语义精确、也不会多拉一份 props。
+  const followRef = useRef<{ enabled: boolean; playing: () => boolean }>({ enabled: followPlayhead, playing: () => false });
+  followRef.current.enabled = followPlayhead;
+  followRef.current.playing = () => !!isPlayingRef?.current;
+  const onAutoScrollRef = useRef(onAutoScroll);
+  onAutoScrollRef.current = onAutoScroll;
+  const widthRef = useRef(intWidth);
+  widthRef.current = intWidth;
+  const lastFollowTimeRef = useRef(-1);
 
   useEffect(() => {
     const canvas = playheadRef.current;
@@ -587,10 +617,32 @@ const Visualizer: React.FC<VisualizerProps> = ({
             ctx.fill();
         }
         lastPlayheadXRef.current = x;
+
+        // ★ v0.8.16：自动跟随 —— 播放中若播放头（红线位置）滑出视区，就把视区整体平移过去。
+        //   与侧栏一致的两档策略：开启时在视区 85% 处提前翻页（余光里能预读下一段），
+        //   关闭时只在播放头真正出界（<0 或 >100%）才拉回，尽量让用户手动滚动的位置保持不动。
+        if (followRef.current.enabled && followRef.current.playing()) {
+            const w = widthRef.current;
+            if (w > 0) {
+                const moved = Math.abs(t - lastFollowTimeRef.current) > 0.002; // 真的在走（防倍速为 0 等边界）
+                lastFollowTimeRef.current = t;
+                const xNow = t * vs.zoom - vs.scrollLeft;
+                const pageAt = w * 0.85;
+                if (moved) {
+                    if (xNow < 0 || xNow > pageAt) {
+                        onAutoScrollRef.current(Math.max(0, t * vs.zoom - w * 0.15));
+                    }
+                } else if (xNow < 0 || xNow > w) {
+                    onAutoScrollRef.current(Math.max(0, t * vs.zoom - w * 0.3));
+                }
+            }
+        } else {
+            lastFollowTimeRef.current = -1; // 退出播放/关闭跟随时复位，下次从当前位置重新判定
+        }
     };
     raf = requestAnimationFrame(draw);
     return () => { cancelAnimationFrame(raf); lastPlayheadXRef.current = -1; };
-  }, [intWidth, intHeight]);
+  }, [intWidth, intHeight, renderDpr]);
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (!audioData) return;

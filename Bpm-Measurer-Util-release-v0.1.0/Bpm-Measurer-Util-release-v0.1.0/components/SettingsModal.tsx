@@ -78,7 +78,12 @@ const PalettePreview: React.FC<{ id: string; custom: [string, string, string] | 
 };
 
 const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onChange, onReset, onClose }) => {
-  const isZh = settings.lang === 'zh';
+  // ★ v0.8.16（修 Bug 1：多语言未全软件统一）：
+  //   原来这里只有 isZh ? nameZh : nameEn 的二选一 —— 选日语/韩语/法语等语言时，
+  //   主题名、频谱方案名、节拍器音色名仍然只显示中英两种，等于多语言没统一。
+  //   现在优先查 i18n（nameKey）；没配 key 的条目回退到中/英名，保证任何语言下都有可读文本。
+  const nameOf = (item: { nameZh: string; nameEn: string; nameKey?: string }): string =>
+    item.nameKey ? t(item.nameKey) : (settings.lang === 'en' ? item.nameEn : item.nameZh);
   // 频谱方案分类二级页：默认切到当前方案所属分类
   const [specCat, setSpecCat] = useState<SpecCategory>(() => {
     const cur = SPEC_PALETTES.find((p) => p.id === settings.specPalette);
@@ -168,7 +173,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onChange, onRes
                     <span className="w-5 h-5 rounded-full border border-[var(--line2)]" style={{ background: p.accent2 }} />
                     <span className="w-5 h-5 rounded-full border border-[var(--line2)]" style={{ background: p.bgColor }} />
                   </div>
-                  <span className="text-[10px] text-[var(--t2)] font-bold">{isZh ? p.nameZh : p.nameEn}</span>
+                  <span className="text-[10px] text-[var(--t2)] font-bold">{nameOf(p)}</span>
                 </button>
               ))}
             </div>
@@ -222,7 +227,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onChange, onRes
                   className={`${btnBase} flex-col gap-1.5 py-2 ${settings.specPalette === p.id ? 'bg-[var(--accent2)] text-white' : 'bg-[var(--chip2)] text-[var(--t3)] hover:bg-[var(--chip)]'}`}
                 >
                   <PalettePreview id={p.id} custom={p.id === 'custom' ? settings.specCustom : null} />
-                  <span className="text-[10px]">{isZh ? p.nameZh : p.nameEn}</span>
+                  <span className="text-[10px]">{nameOf(p)}</span>
                 </button>
               ))}
             </div>
@@ -253,7 +258,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onChange, onRes
                 onClick={() => onChange({ ...settings, specInvert: !settings.specInvert })}
                 className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ${settings.specInvert ? 'bg-[var(--accent)] text-white' : 'bg-[var(--chip2)] text-[var(--t3)] hover:bg-[var(--chip)]'}`}
               >
-                <FlipVertical2 size={14} /> {t('specInvert')}：{settings.specInvert ? (isZh ? '开' : 'ON') : (isZh ? '关' : 'OFF')}
+                <FlipVertical2 size={14} /> {t('specInvert')}：{settings.specInvert ? t('on') : t('off')}
               </button>
             </div>
             {/* 整体渲染分辨率（DPI 缩放）：越低渲染像素越少越流畅（笔记本减负），越高越清晰但更耗性能 */}
@@ -323,6 +328,19 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onChange, onRes
                 title={t('specSensitivityHint')}
               />
             </div>
+            {/* ★ v0.8.16：自动跟随播放头（红线离开窗口时自动翻页，与侧栏「自动翻页」同款行为） */}
+            <div className="mt-3 pt-3 border-t border-[var(--line)]">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-[var(--t3)] uppercase font-bold tracking-widest">{t('followPlayhead')}</span>
+                <button
+                  onClick={() => onChange({ ...settings, followPlayhead: !settings.followPlayhead })}
+                  className={`px-3 py-1 rounded-lg text-[10px] font-black border transition-all ${settings.followPlayhead ? 'bg-[var(--accent)]/20 text-[var(--accent)] border-[var(--accent)]/40' : 'bg-[var(--chip2)] text-[var(--t4)] border-[var(--line2)]'}`}
+                >
+                  {settings.followPlayhead ? t('on') : t('off')}
+                </button>
+              </div>
+              <p className="text-[10px] text-[var(--t4)] mt-1.5 leading-relaxed">{t('followPlayheadHint')}</p>
+            </div>
           </section>
 
           {/* ===== 4 一键复原 ===== */}
@@ -371,7 +389,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onChange, onRes
                   className={`${btnBase} ${settings.metronomeSound === s.id ? 'bg-[var(--accent2)] text-white' : 'bg-[var(--chip2)] text-[var(--t3)] hover:bg-[var(--chip)]'}`}
                   title={t('metPreview')}
                 >
-                  {isZh ? s.nameZh : s.nameEn}
+                  {nameOf(s)}
                 </button>
               ))}
             </div>

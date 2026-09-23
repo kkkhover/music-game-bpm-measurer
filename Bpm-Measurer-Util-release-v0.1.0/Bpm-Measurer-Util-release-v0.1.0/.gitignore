@@ -12,6 +12,15 @@ dist
 dist-ssr
 *.local
 
+# ★ v0.8.16：侧栏集成副本（由 scripts/sync-maphelper.mjs 从 osu-maphelper_v* 目录同步生成）
+#   它是**生成物**，不该入库 —— 之前漏了这一条，导致 35 个生成文件被提交进仓库，
+#   而且那份还是"少了 tests 目录"的子集，与源目录并不一致。
+maphelper/
+# 打包产物与运行期数据（同样不该入库）
+release/
+_smoke-data/
+BPM测速助手_v*/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -25,3 +34,11 @@ dist-ssr
 
 dist/*
 dist-electron/*
+release/
+_smoke-data/
+BPM测速助手_v*/
+
+# ★ v0.8.16：侧栏集成副本（由 scripts/sync-maphelper.mjs 从 osu-maphelper_v* 同步生成）。
+#   它是生成物，不该入库 —— 之前漏了这条，35 个生成文件被提交进仓库，
+#   而且那份还少了 tests 目录，与源目录并不一致。
+maphelper/

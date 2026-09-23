@@ -5,6 +5,9 @@
 (function () {
     'use strict';
     const { $, fmtTime, fmtMs, fmtBpm, setOn, post, saveCfg, startPoll, openPanel } = window.S;
+    // ★ v0.8.16：文案统一走 i18n（T 缺省时退回中文原文，保证模块单独加载也不炸）
+    const T = window.I18N;
+    const tt = (k, d) => (T ? T.t(k) : (d || k));
 
     let last = null;
 
@@ -14,7 +17,9 @@
         // 状态胶囊
         setOn($('pill-tosu'), s.tosu.up && s.tosu.connected);
         setOn($('pill-osu'), s.osu.running);
-        $('pill-state').textContent = s.tosu.connected ? s.tosu.stateLabel : s.tosu.up ? '等待 osu!' : '未连接 tosu';
+        $('pill-state').textContent = s.tosu.connected
+            ? s.tosu.stateLabel
+            : s.tosu.up ? (T ? T.t('waitingOsu') : '等待 osu!') : (T ? T.t('waitingOsu') : '未连接 tosu');
         setOn($('pill-state'), s.tosu.isEditor);
 
         // 播放位置
@@ -33,7 +38,7 @@
             $('map-name').textContent = name;
             $('map-file').textContent = bm.fileName;
         } else {
-            $('map-name').textContent = s.tosu.up ? '等待 osu! 打开制谱器…' : '未连接 tosu';
+            $('map-name').textContent = tt('waitingOsu', '等待 osu! 打开制谱器…');
             $('map-file').textContent = '';
         }
 
@@ -43,8 +48,8 @@
         $('btn-apply').disabled = !dirty;
         const recent = window.__lastExport && Date.now() - window.__lastExport.at < 3000;
         $('apply-info').textContent = recent
-            ? `已导出 → ${window.__lastExport.name}`
-            : dirty ? '有未导出修改' : '未修改';
+            ? tt('exportedTo', '已导出 → ') + window.__lastExport.name
+            : dirty ? tt('dirtyDraft', '有未导出修改') : tt('notModified', '未修改');
     }
 
     // 功能区按钮 → 打开独立窗口
@@ -64,10 +69,13 @@
     // 导出 timing（保存到时间戳命名文件，不写回 .osu）
     $('btn-apply').addEventListener('click', () => {
         $('btn-apply').disabled = true;
-        $('apply-info').textContent = '导出中…';
-        post('/api/timing/export', { mode: 'redlines' }).then((r) => {
+        $('apply-info').textContent = T ? T.t('exportTiming') + '…' : '导出中…';
+        // ★ v0.8.16：mode 参数已删（主进程内部恒为 'merge'，见审计 P3-7）
+        post('/api/timing/export', {}).then((r) => {
             if (r.ok) window.__lastExport = { name: r.name, at: Date.now() };
-            $('apply-info').textContent = r.ok ? `已导出 → ${r.name}` : '失败：' + (r.error || '');
+            $('apply-info').textContent = r.ok
+                ? tt('exportedTo', '已导出 → ') + r.name
+                : tt('exportFailed', '失败：') + (r.error || '');
             $('btn-apply').disabled = false;
         });
     });

@@ -18,7 +18,7 @@ import { findOsuInstallDir, findSongsDir, findOsuProcess, resolveBeatmapPath } f
 import { readOsu, extractRedLines } from './osuFile.mjs';
 import { applyTimingToText, deriveBeatIndex, planAddRedLine } from './timingEdit.mjs';
 import { createBackupManager } from './backup.mjs';
-import { readBpmSettings } from './bpmSettings.mjs';
+import { readBpmSettings, readBpmLang, SUPPORTED_LANGS } from './bpmSettings.mjs';
 
 function round(v, digits) {
     const f = Math.pow(10, digits);
@@ -54,6 +54,38 @@ function bpmDelayState() {
         effectiveMs,  // 实际生效值
         source: follow && softwareMs !== null ? 'software' : 'sidebar',
         dir: read.dir,        // 软件设置目录（排查用）
+        ok: read.ok,
+        error: read.error || null
+    };
+}
+
+/**
+ * ★ v0.8.16：界面语言的「生效值」（修 Bug 1：多语言没有全软件统一、侧栏没有语言更改）。
+ *
+ * 和节拍线延迟同一个思路 —— 侧栏默认直接采用 BPM 测速助手里选的语言：
+ *   · 跟随（默认）：读软件 localStorage 的 lang 字段；
+ *     读不到（软件从未运行 / 值被压缩掉）→ 退回侧栏自己的设置，并带上 error 说明。
+ *   · 不跟随：用侧栏 config.json 里单独指定的语言。
+ * 前端（renderer/i18n.js）只负责按这个值渲染文案，不做任何持久化。
+ */
+function langState() {
+    const cfg = loadConfig();
+    const v = cfg.visual || {};
+    const follow = v.langFollow !== false; // 默认跟随软件
+    const manualLang = SUPPORTED_LANGS.includes(v.lang) ? v.lang : 'zh';
+
+    const read = readBpmSettings();
+    const softwareLang = readBpmLang();
+
+    // 跟随时用软件值；软件读不到就退回侧栏值
+    const effective = follow && softwareLang ? softwareLang : manualLang;
+
+    return {
+        follow,          // 是否跟随软件
+        manualLang,      // 侧栏自己指定的语言
+        softwareLang,    // 软件里的语言（读不到 = null）
+        effective,       // 实际生效语言（前端按它渲染）
+        source: follow && softwareLang ? 'software' : 'sidebar',
         ok: read.ok,
         error: read.error || null
     };
@@ -295,7 +327,13 @@ export function createApp() {
         //   ⚠ 必须**克隆**：直接改 cfgNow 会污染 loadConfig() 的缓存对象，
         //   进而让 saveConfig 把「软件的值」当成用户设置写进 config.json。
         const bpmDelay = bpmDelayState();
-        const cfgOut = { ...cfgNow, visual: { ...cfgNow.visual, beatLineDelayMs: bpmDelay.effectiveMs } };
+        // ★ v0.8.16：语言同理 —— 把「生效语言」写进下发的 config，各窗口统一按它渲染。
+        //   同样必须克隆，避免污染 loadConfig() 的缓存对象。
+        const lang = langState();
+        const cfgOut = {
+            ...cfgNow,
+            visual: { ...cfgNow.visual, beatLineDelayMs: bpmDelay.effectiveMs, lang: lang.effective, langFollow: lang.follow }
+        };
         const reds = beatmap && beatmap.ok ? extractRedLines(beatmap) : [];
         // 把 tosu 的 timing（编辑器内存里的真实 timing）与磁盘文件对比
         const memRedTimes = live.timingPoints.filter((p) => p.uninherited).map((p) => p.time);
@@ -364,6 +402,8 @@ export function createApp() {
             config: cfgOut,
             // 节拍线延迟的来源信息（设置面板用它显示「跟随中 / 手动」+ 软件当前值）
             bpmDelay,
+            // ★ v0.8.16：语言的来源信息（设置面板用它显示语言来源 + 软件当前语言）
+            lang,
             // 内存 timing 编辑状态（多窗口共享；拖动/列表编辑改这里，导入才写盘）
             memTiming: memTiming ? { path: memTiming.path, redLines: memTiming.redLines } : null,
             memDirty,
@@ -506,7 +546,10 @@ export function createApp() {
      * 导出后**不清 memDirty**：磁盘 .osu 确实还没变，dirty 语义保持不变，
      * 用户可反复导出多个时间戳版本（每次点一下就是一个新文件）。
      *
-     * @param {object} payload { mode, points }——省略 points 时用内存 memTiming 的状态
+     * @param {object} payload { points }——省略 points 时用内存 memTiming 的状态
+     *   ★ v0.8.16：**已删掉 payload.mode 参数**（原审计 P3-7）。它自 v0.8.10 起就是死参数：
+     *     前端一直传 mode:'redlines'，但函数内部恒用 'merge'，传什么都没用 →
+     *     留着只会误导调用者以为可以切模式。现在前端也不再传了。
      */
     function exportTiming(payload = {}) {
         if (!beatmapPath || !beatmap) return { ok: false, error: '没有已载入的谱面' };

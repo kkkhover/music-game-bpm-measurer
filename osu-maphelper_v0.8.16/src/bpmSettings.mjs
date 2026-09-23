@@ -107,23 +107,35 @@ function braceObjectAt(text, idx) {
 }
 
 /**
- * 从一段文本里抠出「含 beatLineDelayMs 的那个 JSON 对象」。
+ * 从一段文本里抠出「软件的设置对象」。
  * 同一份文本里可能有历史值（LevelDB 追加写），取**最后一次**命中 = 当前值。
+ *
+ * ★ v0.8.16：锚点从 `"beatLineDelayMs"` 改为 `SETTINGS_KEY`（= "bpm-measurer-settings"）。
+ *   原因：语言同步需要读 `lang` 字段，而老版本用 beatLineDelayMs 当锚 —— 万一将来
+ *   该字段改名/被删，整个读取就失效。以 localStorage 的键名作锚更稳、也更语义化。
+ *   为兼容"键名与值不在同一段文本里"的极端情况，两个锚点都会扫，任一命中都算。
  */
 function extractSettingsObject(text) {
     let best = null;
-    let from = 0;
-    for (;;) {
-        const hit = text.indexOf('"beatLineDelayMs"', from);
-        if (hit < 0) break;
-        const objText = braceObjectAt(text, hit);
-        if (objText) {
-            try {
-                const parsed = JSON.parse(objText);
-                if (parsed && typeof parsed.beatLineDelayMs === 'number') best = parsed;
-            } catch { /* 不是完整 JSON（跨块截断），忽略这次命中 */ }
+    // 先试新锚点（settings 键名），再退回旧锚点（beatLineDelayMs），保证双保险
+    for (const anchor of [`"${SETTINGS_KEY}"`, '"beatLineDelayMs"']) {
+        let from = 0;
+        for (;;) {
+            const hit = text.indexOf(anchor, from);
+            if (hit < 0) break;
+            const objText = braceObjectAt(text, hit);
+            if (objText) {
+                try {
+                    const parsed = JSON.parse(objText);
+                    // 判定"这是软件设置对象"的依据：至少含一个已知设置字段
+                    if (parsed && (typeof parsed.beatLineDelayMs === 'number' || typeof parsed.lang === 'string')) {
+                        best = parsed; // 后面的覆盖前面的 = 取最后一次写入
+                    }
+                } catch { /* 不是完整 JSON（跨块截断），忽略这次命中 */ }
+            }
+            from = hit + 1;
         }
-        from = hit + 1;
+        if (best) return best; // 新锚点命中就不必再试旧锚点
     }
     return best;
 }
@@ -211,6 +223,23 @@ export function readBpmBeatLineDelayMs(force = false) {
     const v = r.settings.beatLineDelayMs;
     return Number.isFinite(v) ? Math.round(v) : null;
 }
+
+/** 侧栏 i18n 支持的语言代码（与软件 utils/settings.ts 的 Language 联合类型一致） */
+const SUPPORTED_LANGS = ['zh', 'en', 'ja', 'ko', 'fr', 'de', 'es', 'ru', 'pt'];
+
+/**
+ * ★ v0.8.16：读软件界面语言（修 Bug 1：多语言没有全软件统一）。
+ * 读不到 / 值非法 → 返回 null，调用方回退到侧栏自己的设置，绝不静默用错语言。
+ * @returns {string|null}
+ */
+export function readBpmLang(force = false) {
+    const r = readBpmSettings(force);
+    if (!r.ok || !r.settings) return null;
+    const v = r.settings.lang;
+    return typeof v === 'string' && SUPPORTED_LANGS.includes(v) ? v : null;
+}
+
+export { SUPPORTED_LANGS };
 
 /** 导出设置键名，便于测试断言与文档引用 */
 export { SETTINGS_KEY };

@@ -15,7 +15,7 @@ import { createBackupManager, stampName } from '../src/backup.mjs';
 import { createTosuClient, detectTosuPort, GameState } from '../src/tosu.mjs';
 import { findOsuInstallDir, findSongsDir } from '../src/paths.mjs';
 import { loadConfig, saveConfig } from '../src/config.mjs';
-import { readBpmSettings, readBpmBeatLineDelayMs } from '../src/bpmSettings.mjs';
+import { readBpmSettings, readBpmBeatLineDelayMs, readBpmLang } from '../src/bpmSettings.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -369,10 +369,14 @@ section('⑤ BPM 测速助手 设置读取（节拍线延迟同步）');
     fs.mkdirSync(fakeDb, { recursive: true });
 
     // 复刻 Chromium localStorage 的落盘格式：_<origin>\x00\x01<key>\x01<json>
-    const rec = (ms, v) =>
+    // ★ v0.8.16：带上 lang 字段 —— 语言同步也走这条读取路径，
+    //   这里让历史值是 'zh'、最后一条是 'ja'（**与被测默认值不同**），
+    //   这样"到底读到哪一条"才是可观测的：读到 zh 说明取错了历史值。
+    const rec = (ms, v, lang) =>
         `\u0000\u0001_https://osu-maphelper\u0000\u0001bpm-measurer-settings\u0001` +
-        `{"accent":"#6366f1","beatLineDelayMs":${ms},"specSensitivity":75,"__v":${v}}`;
-    fs.writeFileSync(path.join(fakeDb, '000003.log'), rec(-25, 6) + rec(25, 6) + rec(42, 7), 'latin1');
+        `{"accent":"#6366f1","beatLineDelayMs":${ms},"specSensitivity":75,"lang":"${lang}","__v":${v}}`;
+    fs.writeFileSync(path.join(fakeDb, '000003.log'),
+        rec(-25, 6, 'zh') + rec(25, 6, 'zh') + rec(42, 7, 'ja'), 'latin1');
 
     const prevEnv = process.env.BPM_USER_DATA;
     process.env.BPM_USER_DATA = fakeRoot;
@@ -384,16 +388,29 @@ section('⑤ BPM 测速助手 设置读取（节拍线延迟同步）');
         ok('便捷函数同样正确', readBpmBeatLineDelayMs(true) === 42);
         ok('缓存命中时结果一致（不重复读盘）', readBpmBeatLineDelayMs() === 42);
 
+        // ★ v0.8.16 新增：语言读取（同样的"取最后一次"语义）
+        ok('能读出软件语言', readBpmLang(true) === 'ja',
+            `读到 ${readBpmLang(true)}（期望 ja；历史值 zh 不该被选中）`);
+
         // UTF-16LE 落盘分支（值里含非 Latin-1 字符时 Chromium 会改用这个编码）
-        fs.writeFileSync(path.join(fakeDb, '000004.log'), Buffer.from(rec(7, 7), 'utf16le'));
+        fs.writeFileSync(path.join(fakeDb, '000004.log'), Buffer.from(rec(7, 7, 'ko'), 'utf16le'));
         const rUtf16 = readBpmSettings(true);
         ok('UTF-16LE 编码也能解析', rUtf16.ok === true && rUtf16.settings.beatLineDelayMs === 7,
             rUtf16.ok ? `读到 ${rUtf16.settings.beatLineDelayMs}` : rUtf16.error || '');
+        ok('UTF-16LE 下语言同样可读', readBpmLang(true) === 'ko',
+            `读到 ${readBpmLang(true)}（期望 ko）`);
+
+        // 非法语言值 → 必须返回 null（调用方回退侧栏设置），不能把脏值透出去
+        fs.writeFileSync(path.join(fakeDb, '000005.log'),
+            Buffer.from(rec(9, 8, 'not-a-lang'), 'latin1'));
+        ok('非法语言值返回 null（不污染调用方）', readBpmLang(true) === null,
+            `读到 ${readBpmLang(true)}`);
 
         // 目录不存在 → 必须优雅降级（抛异常会让 /api/state 整条挂掉）
         process.env.BPM_USER_DATA = path.join(tmpDir, 'not-exist-dir');
         const r2 = readBpmSettings(true);
         ok('目录不存在时返回 ok:false（不抛异常）', r2.ok === false && !!r2.error, r2.error || '');
+        ok('目录不存在时语言读取返回 null', readBpmLang(true) === null);
     } finally {
         if (prevEnv === undefined) delete process.env.BPM_USER_DATA;
         else process.env.BPM_USER_DATA = prevEnv;
@@ -404,6 +421,8 @@ section('⑤ BPM 测速助手 设置读取（节拍线延迟同步）');
     if (real.ok) {
         ok('本机软件设置可读（真实环境）', Number.isFinite(real.settings.beatLineDelayMs),
             `beatLineDelayMs=${real.settings.beatLineDelayMs}`);
+        ok('本机软件语言可读（真实环境）', typeof readBpmLang(true) === 'string',
+            `lang=${readBpmLang(true)}`);
     } else {
         ok('本机未找到软件设置 → 侧栏回退到手动值', true, real.error || '');
     }

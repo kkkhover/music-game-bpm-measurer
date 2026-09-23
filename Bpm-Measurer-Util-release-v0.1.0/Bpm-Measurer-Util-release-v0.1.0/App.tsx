@@ -218,6 +218,11 @@ function App() {
   // 只留 fileName 是拿不到文件的。
   const [audioPath, setAudioPath] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  // ★ v0.8.16：与 isPlaying state 同步的 ref —— 供 Visualizer 的 rAF 循环每帧读取实时播放状态
+  //   （跟随滚动要在 rAF 里判定"是否正在播放"，不能等 React 渲染；且必须显式传入，
+  //    不能像侧栏那样靠"时间有没有变"推断，否则暂停后手动滚动会被误判成播放而拽回）
+  const isPlayingRef = useRef(false);
+  isPlayingRef.current = isPlaying;
   const [currentTime, setCurrentTime] = useState(0);
   const [isMetronomeOn, setIsMetronomeOn] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -521,6 +526,11 @@ function App() {
       setRawPoints(prev => prev.map(p => (p.id === id ? { ...p, timeSec: clamped } : p)));
   }, [timingPoints, handleOffsetChange]);
 
+  // ★ v0.8.16：stop() 定义在下方（第 ~780 行），而 handleFileUpload 在上方。
+  //   函数体虽然在运行时才求值、且 handleFileUpload 只被事件/键盘 effect 调用（渲染提交后才跑），
+  //   但为了彻底避免 TDZ 隐患，这里用 ref 转发：下方 stop() 定义后立刻把最新实现写进这个 ref。
+  const stopRef = useRef<() => void>(() => {});
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement> | null = null) => {
     let file: File | null = null;
     
@@ -555,7 +565,12 @@ function App() {
         playheadRef.current = 0;
         setCurrentTime(0);
         setViewState({ zoom: DEFAULT_ZOOM, scrollLeft: 0 });
-        setIsPlaying(false);
+        // ★ v0.8.16 修 Bug：原来这里只 setIsPlaying(false)，**没有真正停止音源** ——
+        //   播放中导入新音频时，旧 AudioBufferSourceNode 会继续发声（两首歌声音重叠），
+        //   而且下一次 play() 会用新 source 覆盖 sourceNodeRef.current，
+        //   旧句柄永久丢失 → 之后按空格也停不掉它，只能等它自然播完。
+        //   改成调用 stop()（内部会断开并置空旧 sourceNodeRef）才是彻底的停止。
+        stopRef.current();
     } catch (err) { console.error(err); alert(t('decodeError')); }
   };
 
@@ -765,6 +780,9 @@ function App() {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
   }, []);
 
+  // ★ v0.8.16：把 stop 的实现写进 ref，供上方的 handleFileUpload 调用（避免 TDZ）
+  stopRef.current = stop;
+
   const play = useCallback(async () => {
     if (!audioData) return;
     if (audioContext.state === 'suspended') await audioContext.resume();
@@ -899,12 +917,39 @@ function App() {
       }
   }, [audioContext]);
 
-  // ===== 常用快捷键（不做界面标注）=====
+  // ===== 常用快捷键（不做界面标注，帮助面板里只列了 Space / 缩放 / 段落切换）=====
   //  Ctrl+Z 撤销 / Ctrl+Shift+Z · Ctrl+Y 重做 / Space 播放暂停 /
   //  ← → 快退快进 1s（Shift 5s）/ + - 缩放 / Ctrl+O 打开音频 / Ctrl+S 导出 JSON
+  //  ★ v0.8.16 新增：Alt+← → 上/下一段 / Alt+滚轮 精细调 px/s（滚轮相关见 Visualizer 容器 onWheel）
   const zoomBy = useCallback((factor: number) => {
       setViewState(s => ({ ...s, zoom: Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, s.zoom * factor)) }));
   }, []);
+
+  /**
+   * ★ v0.8.16：Alt+← / Alt+→ —— 切到上一段 / 下一段（与侧栏 Alt+←→ 行为对齐）。
+   *   基准段 = **播放头当前所在的段**（不是"上次点过的段"），这样播放中按也符合直觉；
+   *   切过去做三件事：播放头移到该段起点 + 视图把它滚到居中 + 右侧面板卡片滚过去高亮。
+   *   到头就停（clamp），不循环。
+   */
+  const stepSection = useCallback((dir: -1 | 1) => {
+      if (!timingPoints.length) return;
+      const t = currentTimeRef.current;
+      // 找播放头落在哪一段（timingPoints 按时间升序，最后一个 time<=t 的就是当前段）
+      let idx = 0;
+      for (let i = 0; i < timingPoints.length; i++) {
+          if (timingPoints[i].time <= t) idx = i; else break;
+      }
+      const next = Math.max(0, Math.min(timingPoints.length - 1, idx + dir));
+      const target = timingPoints[next];
+      if (!target) return;
+      handleSeek(target.time);
+      // 视图居中（与 handleSeek 里"超出视区才居中"不同：这里是**明确要求**跳段，所以无条件居中）
+      setViewState(v => {
+          const maxScroll = Math.max(0, (audioData?.duration || 0) * v.zoom - containerWidth);
+          return { ...v, scrollLeft: Math.max(0, Math.min(target.time * v.zoom - containerWidth / 2, maxScroll)) };
+      });
+      handleSectionClick(target.id); // 右侧面板滚到对应卡片并闪一下高亮
+  }, [timingPoints, handleSeek, audioData, containerWidth, handleSectionClick]);
 
   useEffect(() => {
       /** 焦点在输入类元素里时不拦截（保留浏览器/输入框自身的快捷键行为） */
@@ -933,6 +978,13 @@ function App() {
           if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
           if (ctrl && key === 'o') { e.preventDefault(); handleFileUpload(null); return; }
           if (ctrl && key === 's') { e.preventDefault(); handleExportJson(); return; }
+          // ★ v0.8.16：Alt+← / Alt+→ 切上/下一段（必须排在普通 ←→ 之前，
+          //   否则会被"快退快进 1s"先吃掉 —— 两者 e.code 相同，只差 altKey）
+          if (e.altKey && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) {
+              e.preventDefault();
+              stepSection(e.code === 'ArrowLeft' ? -1 : 1);
+              return;
+          }
           if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
               const step = e.shiftKey ? 5 : 1;
               e.preventDefault();
@@ -944,7 +996,7 @@ function App() {
       };
       window.addEventListener('keydown', handleKeyDown);
       return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [togglePlay, undo, redo, handleFileUpload, handleExportJson, handleSeek, zoomBy]);
+  }, [togglePlay, undo, redo, handleFileUpload, handleExportJson, handleSeek, zoomBy, stepSection]);
 
   return (
     <div className="relative flex h-screen w-screen text-[var(--t1)] font-sans overflow-hidden" style={{
@@ -1033,11 +1085,24 @@ function App() {
             {audioData ? (
                 <div ref={containerRef} className="absolute inset-0 w-full h-full" 
                      onWheel={(e) => {
-                        if (e.shiftKey) {
-                            // Shift+滚轮缩放：以鼠标位置为锚点，基于最新状态计算（函数式更新，防止缩放中心漂移）
-                            const rect = containerRef.current?.getBoundingClientRect();
-                            if (!rect) return;
-                            const mouseX = e.clientX - rect.left;
+                        const rect = containerRef.current?.getBoundingClientRect();
+                        if (!rect) return;
+                        const mouseX = e.clientX - rect.left;
+                        if (e.altKey) {
+                            // ★ v0.8.16：Alt+滚轮 = **精细**调整频谱的 px/s（缩放）。
+                            //   与 Shift+滚轮（粗调，每格 ×1.1 / ×0.9）分开：精细档每格只动 3%，
+                            //   用来在"看清某一拍"和"看全整段"之间微调，不会一下跳太远。
+                            //   同样以鼠标位置为锚点，光标下那个时间点保持不动。
+                            const zoomFactor = e.deltaY < 0 ? 1.03 : 1 / 1.03;
+                            setViewState(prev => {
+                                const timeAtMouse = (mouseX + prev.scrollLeft) / prev.zoom;
+                                const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, prev.zoom * zoomFactor));
+                                const newScrollLeft = timeAtMouse * newZoom - mouseX;
+                                const maxScroll = Math.max(0, audioData.duration * newZoom - containerWidth);
+                                return { zoom: newZoom, scrollLeft: Math.max(0, Math.min(newScrollLeft, maxScroll)) };
+                            });
+                        } else if (e.shiftKey) {
+                            // Shift+滚轮 = 粗缩放（每格 ×1.1 / ×0.9），同样以鼠标位置为锚点
                             const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
                             setViewState(prev => {
                                 const timeAtMouse = (mouseX + prev.scrollLeft) / prev.zoom;
@@ -1075,6 +1140,9 @@ function App() {
                             specFFTSize={settings.specFFTSize}
                             specSensitivity={settings.specSensitivity}
                             beatLineDelaySec={settings.beatLineDelayMs / 1000}
+                            followPlayhead={settings.followPlayhead}
+                            isPlayingRef={isPlayingRef}
+                            onAutoScroll={(sl) => setViewState(v => (v.scrollLeft === sl ? v : { ...v, scrollLeft: sl }))}
                         />
                     )}
                 </div>
@@ -1134,6 +1202,15 @@ function App() {
                                     <div className="flex justify-between items-center bg-[var(--chip2)] p-3 rounded-xl border border-[var(--line)]">
                                         <span className="text-xs text-[var(--t4)] uppercase font-black">{t('zoomHelp')}</span>
                                         <kbd className="bg-gray-800 px-3 py-1 rounded text-white font-mono text-sm">Shift + Scroll</kbd>
+                                    </div>
+                                    {/* ★ v0.8.16：新增两个快捷键 —— Alt+滚轮 精细调 px/s、Alt+←→ 上/下一段 */}
+                                    <div className="flex justify-between items-center bg-[var(--chip2)] p-3 rounded-xl border border-[var(--line)]">
+                                        <span className="text-xs text-[var(--t4)] uppercase font-black">{t('zoomFine')}</span>
+                                        <kbd className="bg-gray-800 px-3 py-1 rounded text-white font-mono text-sm">Alt + Scroll</kbd>
+                                    </div>
+                                    <div className="flex justify-between items-center bg-[var(--chip2)] p-3 rounded-xl border border-[var(--line)]">
+                                        <span className="text-xs text-[var(--t4)] uppercase font-black">{t('stepSection')}</span>
+                                        <kbd className="bg-gray-800 px-3 py-1 rounded text-white font-mono text-sm">Alt + &larr; / &rarr;</kbd>
                                     </div>
                                 </div>
                             </section>

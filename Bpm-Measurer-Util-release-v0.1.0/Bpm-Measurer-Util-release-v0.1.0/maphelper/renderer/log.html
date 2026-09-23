@@ -7,17 +7,19 @@
             http-equiv="Content-Security-Policy"
             content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; media-src 'self' blob:"
         />
-        <title>日志</title>
+        <!-- ★ v0.8.16：静态文案统一走 data-i18n -->
+        <title data-i18n="log">日志</title>
         <link rel="stylesheet" href="style.css" />
     </head>
     <body class="panel-body">
         <div class="panel-wrap">
             <div class="panel-titlebar">
-                <span class="pt-title">日志</span>
-                <button class="pin-btn" id="btn-pin" title="切换置顶（默认置顶）">📌</button>
+                <span class="pt-title" data-i18n="log">日志</span>
+                <button class="pin-btn" id="btn-pin" data-i18n-title="pinTip" title="切换置顶（默认置顶）">📌</button>
             </div>
             <div class="log panel-log" id="log"></div>
         </div>
+        <script src="i18n.js"></script>
         <script src="state.js"></script>
         <script src="log-panel.js"></script>
     </body>

@@ -36,7 +36,7 @@
                     </label>
 
                     <button class="mini-toggle" id="au-metro" title="节拍器开关：本地试听时按红线/BPM 打拍，重拍落在每小节第一拍">
-                        ♩ 节拍器
+                        <span data-i18n="metronome">♩ 节拍器</span>
                     </button>
 
                     <label class="au-ctl" title="音乐变速（保持音调不变）">
@@ -65,7 +65,7 @@
                     id="btn-autofollow"
                     title="自动翻页：播放头快到窗口右边时，自动把视图翻到下一段并提前渲染该段频谱/声谱"
                 >
-                    ⏭ 自动翻页
+                    <span data-i18n="autoFollow">⏭ 自动翻页</span>
                 </button>
                 <button class="pin-btn" id="btn-pin" title="切换置顶（默认置顶）">📌</button>
             </div>
@@ -79,14 +79,14 @@
                 <section class="sec-zone">
                     <div class="sec-head">
                         <span class="zone-badge">①</span>
-                        <span class="sec-title">变速段落</span>
+                        <span class="sec-title" data-i18n="svSections">变速段落</span>
                         <span class="sec-count" id="sec-count">0</span>
                         <span class="sec-note" id="sec-note"
                             >点频谱红线 → 跳到对应段落卡片 · 双击卡片 → 频谱居中</span
                         >
                     </div>
                     <div class="sec-strip" id="sec-strip">
-                        <div class="empty">暂无数据</div>
+                        <div class="empty" data-i18n="noData">暂无数据</div>
                     </div>
                 </section>
 
@@ -94,7 +94,7 @@
                 <aside class="side-zone">
                     <div class="sz-label">
                         <span class="zone-badge">②</span>
-                        <span>全局起始偏移（offset）</span>
+                        <span data-i18n="globalOffset">全局起始偏移（offset）</span>
                     </div>
                     <div class="sz-row">
                         <input
@@ -110,7 +110,7 @@
 
                     <div class="sz-sep"></div>
 
-                    <div class="sz-label"><span>变速段落编号</span></div>
+                    <div class="sz-label"><span data-i18n="sectionIndex">变速段落编号</span></div>
                     <div class="sz-row">
                         <button class="mini" id="sz-prev" title="上一个变速段落（Alt+←）">◀</button>
                         <span class="sz-idx" id="sz-idx">— / —</span>
@@ -124,10 +124,10 @@
                         id="sz-add"
                         title="在播放头位置新增一条红线（继承所在段 BPM）；双击时间轴空白处也可添加"
                     >
-                        ＋ 添加变速段落
+                        <span data-i18n="addSvSection">＋ 添加变速段落</span>
                     </button>
                     <div class="sz-row">
-                        <button class="mini" id="sz-del" title="删除选中的变速段落（Delete）">✕ 删除</button>
+                        <button class="mini" id="sz-del" title="删除选中的变速段落（Delete）"><span data-i18n="deleteSection">✕ 删除</span></button>
                         <button class="mini" id="sz-import" title="把编辑后的 timing 导出到时间戳命名的独立文件（Ctrl+S），不写回原 .osu">
                             ⇩ 导出 timing
                         </button>
@@ -138,6 +138,7 @@
                 </aside>
             </div>
         </div>
+        <script src="i18n.js"></script>
         <script src="state.js"></script>
         <script src="viz.js"></script>
         <script src="viz-panel.js"></script>

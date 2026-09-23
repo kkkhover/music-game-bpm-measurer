@@ -1,7 +1,7 @@
 {
   "name": "bpm-measurer-util",
   "private": true,
-  "version": "0.8.15",
+  "version": "0.8.16",
   "type": "module",
   "main": "boot.cjs",
   "scripts": {
@@ -36,7 +36,7 @@
     "asar": false,
     "directories": {
       "buildResources": "resources",
-      "output": "D:/tmp/新建文件夹/bpm app/BPM测速助手_v0.8.15"
+      "output": "D:/tmp/新建文件夹/bpm app/BPM测速助手_v0.8.16"
     },
     "files": [
       "dist/**/*",

@@ -66,11 +66,13 @@ _poc-osumem/
 orig_src/
 新建文件夹/
 *.zip
+_test_tone_*.wav
 
 # ---------- 项目内部笔记（含本机路径等，不公开）----------
 .workbuddy/
 
-# ---------- 侧栏历史版本目录：只留最新（v0.8.12），旧版靠 git 历史回看 ----------
+# ---------- 侧栏历史版本目录：只留最新（v0.8.16），旧版靠 git 历史回看 ----------
+#   ★ 侧栏目录名跟着版本号走，换版本时把**旧版本号那一行补进来**即可。
 osu-maphelper_v0.8.1/
 osu-maphelper_v0.8.3/
 osu-maphelper_v0.8.4/
@@ -80,6 +82,7 @@ osu-maphelper_v0.8.7/
 osu-maphelper_v0.8.8/
 osu-maphelper_v0.8.9/
 osu-maphelper_v0.8.10/
+osu-maphelper_v0.8.12/
 
 # ---------- 编辑器 / 系统 ----------
 .vscode/*

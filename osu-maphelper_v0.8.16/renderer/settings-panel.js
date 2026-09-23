@@ -14,6 +14,8 @@
 (function () {
     'use strict';
     const { $, saveCfg, post, startPoll, togglePin } = window.S;
+    // ★ v0.8.16：代码里动态拼接的文案也走 i18n（缺省退回中文）
+    const tt = (k, d, vars) => (window.I18N ? window.I18N.t(k, vars) : d);
 
     $('btn-pin').addEventListener('click', () => togglePin('settings'));
 
@@ -140,9 +142,31 @@
     $('btn-bpm-reload').addEventListener('click', () => {
         const btn = $('btn-bpm-reload');
         btn.disabled = true;
-        $('delay-src').textContent = '节拍线延迟来源：正在重读软件设置…';
+        $('delay-src').textContent = tt('delaySrcReloading', '节拍线延迟来源：正在重读软件设置…');
         post('/api/bpm-settings', {})
-            .catch(() => { $('delay-src').textContent = '节拍线延迟来源：读取失败（服务未响应）'; })
+            .catch(() => { $('delay-src').textContent = tt('delaySrcFail', '节拍线延迟来源：读取失败（服务未响应）'); })
+            .finally(() => { btn.disabled = false; });
+    });
+
+    // ---- ★ v0.8.16：界面语言（修 Bug 1：多语言没有全软件统一、侧栏没有语言更改）----
+    // 侧栏默认「跟随软件」：直接采用 BPM 测速助手里选的语言。
+    // 取消勾选后可用下拉单独为侧栏指定语言。
+    // 语言代码列表与 renderer/i18n.js 的 LANGS 一致（zh/en/ja/ko/fr/de/es/ru/pt）。
+    $('cfg-lang-follow').addEventListener('change', (e) => {
+        const on = !!e.target.checked;
+        $('cfg-lang').disabled = on;
+        saveCfg({ visual: { langFollow: on } });
+    });
+    $('cfg-lang').addEventListener('change', (e) => {
+        saveCfg({ visual: { lang: e.target.value } });
+    });
+    // 「重新读取」：与节拍线延迟的同款按钮 —— 在软件里刚改完语言时点一下，立即生效
+    $('btn-lang-reload').addEventListener('click', () => {
+        const btn = $('btn-lang-reload');
+        btn.disabled = true;
+        $('lang-src').textContent = window.I18N ? window.I18N.t('langSourceReading') : '语言来源：读取中…';
+        post('/api/bpm-settings', {})
+            .catch(() => { $('lang-src').textContent = window.I18N ? window.I18N.t('langReadFail') : '语言来源：读取失败'; })
             .finally(() => { btn.disabled = false; });
     });
 
@@ -216,10 +240,11 @@
         if (follow) {
             const hasSw = bd.softwareMs !== null && bd.softwareMs !== undefined;
             $('delay-src').textContent = hasSw
-                ? `节拍线延迟来源：BPM 测速助手（当前 ${bd.softwareMs}ms）`
-                : `节拍线延迟来源：跟随软件，但读不到软件设置（暂用侧栏的 ${bd.manualMs !== undefined ? bd.manualMs : delayMs}ms）${bd.error ? ' · ' + bd.error : ''}`;
+                ? tt('delaySrcApp', `节拍线延迟来源：BPM 测速助手（当前 ${bd.softwareMs}ms）`, { n: bd.softwareMs })
+                : tt('delaySrcNoSw', `节拍线延迟来源：跟随软件，但读不到软件设置（暂用侧栏的 ${bd.manualMs !== undefined ? bd.manualMs : delayMs}ms）`, { n: bd.manualMs !== undefined ? bd.manualMs : delayMs })
+                    + (bd.error ? ' · ' + bd.error : '');
         } else {
-            $('delay-src').textContent = `节拍线延迟来源：侧栏手动设置（${bd.manualMs !== undefined ? bd.manualMs : delayMs}ms），未跟随软件`;
+            $('delay-src').textContent = tt('delaySrcManual', `节拍线延迟来源：侧栏手动设置（${bd.manualMs !== undefined ? bd.manualMs : delayMs}ms），未跟随软件`, { n: bd.manualMs !== undefined ? bd.manualMs : delayMs });
         }
         setVal('cfg-fft', String(v.fftSize || 1024));
         setVal('cfg-palette', v.palette || 'spectrum');
@@ -252,6 +277,34 @@
         if (document.activeElement !== fbf) fbf.value = String(v.fallbackFps !== undefined ? v.fallbackFps : 33);
         const fst = $('cfg-framestat');
         if (document.activeElement !== fst) fst.checked = v.showFrameStat === true;
+
+        // ---- ★ v0.8.16 语言：跟随开关 + 下拉回显 + 来源说明 ----
+        const lg = s.lang || {};
+        const langFollow = lg.follow !== false;
+        const lf = $('cfg-lang-follow');
+        if (document.activeElement !== lf) lf.checked = langFollow;
+        const langSel = $('cfg-lang');
+        if (langSel) {
+            // 跟随时下拉展示"软件当前语言"，但仍禁用（避免用户误以为可以单独改）
+            const shown = langFollow
+                ? (lg.effective || 'zh')
+                : (lg.manualLang || 'zh');
+            if (document.activeElement !== langSel) langSel.value = shown;
+            langSel.disabled = langFollow;
+        }
+        const langSrc = $('lang-src');
+        if (langSrc && window.I18N) {
+            const T = window.I18N;
+            const native = T.langNative;
+            if (langFollow) {
+                const sw = lg.softwareLang;
+                langSrc.textContent = sw
+                    ? T.t('langFromApp', { lang: native(sw) })
+                    : T.t('langReadFail') + (lg.error ? ' · ' + lg.error : '');
+            } else {
+                langSrc.textContent = T.t('langManual');
+            }
+        }
     }
 
     startPoll(render, 300);

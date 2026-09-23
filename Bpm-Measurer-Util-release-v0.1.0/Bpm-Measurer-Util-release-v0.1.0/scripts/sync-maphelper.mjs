@@ -24,11 +24,18 @@ const PROJECT = path.resolve(__dirname, '..');
 const TARGET = path.join(PROJECT, 'maphelper');
 
 // 侧栏源码可能所在的大目录（按顺序找，第一个命中为准）
+// ★ v0.8.16：**去掉了写死的本机路径**（原审计 P1-3）。
+//   原来最后一项硬编码 'D:\tmp\新建文件夹\bpm app' —— 那是开发机专有路径，
+//   换到别人的机器 / 交付包里必然不存在，只会白扫一次目录。
+//   现在只认这三处，已经能覆盖所有真实场景：
+//     ① 环境变量 MAPHELPER_SRC_ROOT（CI / 特殊布局用）
+//     ② 主程序上一级目录（**交付包的结构**：bpm app v0.8.16\{软件, 源码, osu-maphelper_v*}
+//        里侧栏与源码同级；也覆盖本地并排开发的布局）
+//     ③ 再上一级目录（本地开发时侧栏放在工作区子目录里的情况）
 const SEARCH_ROOTS = [
     process.env.MAPHELPER_SRC_ROOT || '',
     path.resolve(PROJECT, '..'),
-    path.resolve(PROJECT, '..', '..'),
-    'D:\\tmp\\新建文件夹\\bpm app'
+    path.resolve(PROJECT, '..', '..')
 ].filter(Boolean);
 
 /** 任何层级都不进集成副本的目录（依赖 / 日志 / 用户备份 / 版本控制） */

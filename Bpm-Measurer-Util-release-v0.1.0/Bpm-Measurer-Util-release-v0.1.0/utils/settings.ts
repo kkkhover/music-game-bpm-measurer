@@ -22,6 +22,8 @@ export interface MetronomeSound {
   category: MetronomeCategory;
   nameZh: string;
   nameEn: string;
+  // ★ v0.8.16：i18n key（有值时优先走 t(nameKey)，实现 9 语言统一；无值时回退 nameZh/nameEn）
+  nameKey?: string;
   type: OscillatorType; // 波形类型
   freqMain: number;     // 重拍频率 (Hz)
   freqAlt: number;      // 弱拍频率 (Hz)
@@ -70,6 +72,8 @@ export interface AppSettings {
   beatLineDelayMs: number; // 红线节拍线延迟手动微调（毫秒，滑条 ±100 / 输入框任意值）：仅偏移节拍线显示位置，不影响频谱/声谱时间轴
   specFFTSize: number;  // 频谱 FFT 精度（采样点数，2 的幂）：越大频率分辨率越高（0.5K≈86Hz / 1K≈43Hz / 2K≈21Hz / 4K≈11Hz @44.1kHz）
   specSensitivity: number; // 频谱显示灵敏度（dB 阈值）：低于该 dB 显示为黑色，越小越敏感（60~120）
+  // ★ v0.8.16：播放时自动跟随播放头（与侧栏 viz 的「自动翻页」同款行为）
+  followPlayhead: boolean;
   // ---- 语言 ----
   lang: Language;
 }
@@ -92,6 +96,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   beatLineDelayMs: 30, // 默认红线节拍线延迟 30ms（v0.7.22 起；用户仍可在设置里微调）
   specFFTSize: 1024, // 默认 1K 精度（频率分辨率 ~43Hz，兼顾清晰度与性能）
   specSensitivity: 75, // 默认灵敏度阈值 75dB（弱信号较明显，画面通透）
+  followPlayhead: true, // 默认开启自动跟随（播放头滑出视区即翻页，符合绝大多数制谱习惯）
   lang: 'zh',
 };
 
@@ -104,16 +109,18 @@ export interface ThemePreset {
   accent2: string;
   bgColor: string;
   panelBg: string;
+  // ★ v0.8.16：i18n key（有值时优先走 t(nameKey)，实现 9 语言统一）
+  nameKey?: string;
 }
 
 export const THEME_PRESETS: ThemePreset[] = [
-  { id: 'dark',    nameZh: '暗黑·默认', nameEn: 'Dark Default', accent: '#6366f1', accent2: '#06b6d4', bgColor: '#030712', panelBg: '#111827' },
-  { id: 'deepblue',nameZh: '深海蓝',    nameEn: 'Deep Blue',    accent: '#3b82f6', accent2: '#22d3ee', bgColor: '#020617', panelBg: '#0f172a' },
-  { id: 'aurora',  nameZh: '极光',      nameEn: 'Aurora',       accent: '#8b5cf6', accent2: '#10b981', bgColor: '#0b0f19', panelBg: '#151c2c' },
-  { id: 'neon',    nameZh: '霓虹',      nameEn: 'Neon',         accent: '#ec4899', accent2: '#22d3ee', bgColor: '#120a1a', panelBg: '#1e1230' },
-  { id: 'matrix',  nameZh: '矩阵绿',    nameEn: 'Matrix',       accent: '#22c55e', accent2: '#84cc16', bgColor: '#02120a', panelBg: '#0a2014' },
-  { id: 'gold',    nameZh: '黑金',      nameEn: 'Black & Gold', accent: '#d4af37', accent2: '#f0c75e', bgColor: '#0a0908', panelBg: '#16130c' },
-  { id: 'light',   nameZh: '亮白',      nameEn: 'Light',        accent: '#4f46e5', accent2: '#0891b2', bgColor: '#f8fafc', panelBg: '#ffffff' },
+  { id: 'dark',    nameZh: '暗黑·默认', nameEn: 'Dark Default', nameKey: 'themeDark',     accent: '#6366f1', accent2: '#06b6d4', bgColor: '#030712', panelBg: '#111827' },
+  { id: 'deepblue',nameZh: '深海蓝',    nameEn: 'Deep Blue',    nameKey: 'themeDeepBlue', accent: '#3b82f6', accent2: '#22d3ee', bgColor: '#020617', panelBg: '#0f172a' },
+  { id: 'aurora',  nameZh: '极光',      nameEn: 'Aurora',       nameKey: 'themeAurora',   accent: '#8b5cf6', accent2: '#10b981', bgColor: '#0b0f19', panelBg: '#151c2c' },
+  { id: 'neon',    nameZh: '霓虹',      nameEn: 'Neon',         nameKey: 'themeNeon',     accent: '#ec4899', accent2: '#22d3ee', bgColor: '#120a1a', panelBg: '#1e1230' },
+  { id: 'matrix',  nameZh: '矩阵绿',    nameEn: 'Matrix',       nameKey: 'themeMatrix',   accent: '#22c55e', accent2: '#84cc16', bgColor: '#02120a', panelBg: '#0a2014' },
+  { id: 'gold',    nameZh: '黑金',      nameEn: 'Black & Gold', nameKey: 'themeGold',     accent: '#d4af37', accent2: '#f0c75e', bgColor: '#0a0908', panelBg: '#16130c' },
+  { id: 'light',   nameZh: '亮白',      nameEn: 'Light',        nameKey: 'themeLight',    accent: '#4f46e5', accent2: '#0891b2', bgColor: '#f8fafc', panelBg: '#ffffff' },
 ];
 
 // ---- PS 风格预设色卡（点击选取）----
@@ -124,7 +131,7 @@ export const SWATCH_COLORS: string[] = [
 ];
 
 const STORAGE_KEY = 'bpm-measurer-settings';
-const STORAGE_VERSION = 7; // v0.7.22：红线节拍线延迟默认 30ms（旧默认 0 → 一次性迁移为 30）
+const STORAGE_VERSION = 8; // v0.8.16：新增 followPlayhead（自动跟随播放头，默认开）
 
 /** 从 localStorage 读取设置（合并默认值，容错；旧版本自动迁移频谱默认） */
 export function loadSettings(): AppSettings {
@@ -205,6 +212,8 @@ export interface SpecPalette {
   category: SpecCategory; // single=纯色渐变 / scale=完整色阶 / band=三分频
   nameZh: string;
   nameEn: string;
+  // ★ v0.8.16：i18n key（有值时优先走 t(nameKey)，实现 9 语言统一）
+  nameKey?: string;
 }
 
 export const SPEC_PALETTES: SpecPalette[] = [

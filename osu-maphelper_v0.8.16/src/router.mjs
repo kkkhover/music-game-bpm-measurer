@@ -57,7 +57,9 @@ export function createRouter(app) {
                 beatLineDelayMs: num(s.beatLineDelayMs),
                 specSensitivity: num(s.specSensitivity),
                 fftSize: num(s.specFFTSize),
-                musicVolume: num(s.musicVolume)
+                musicVolume: num(s.musicVolume),
+                // ★ v0.8.16：语言（「重新读取」按钮用它即时取回软件里的最新语言）
+                lang: typeof s.lang === 'string' ? s.lang : null
             });
         }
 

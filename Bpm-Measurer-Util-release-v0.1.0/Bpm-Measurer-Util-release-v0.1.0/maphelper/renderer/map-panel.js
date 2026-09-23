@@ -2,6 +2,8 @@
 (function () {
     'use strict';
     const { $, post, startPoll, togglePin } = window.S;
+    // ★ v0.8.16：文案走 i18n（缺省退回中文）
+    const tt = (k, d) => (window.I18N ? window.I18N.t(k) : d);
 
     $('btn-pin').addEventListener('click', () => togglePin('map'));
     $('btn-rescan').addEventListener('click', () => post('/api/rescan'));
@@ -18,17 +20,19 @@
             $('stat-red').textContent = bm.redCount;
             $('stat-green').textContent = bm.greenCount;
             const syncEl = $('stat-sync');
-            syncEl.textContent = bm.inSync ? '同步' : `${bm.redCount}/${bm.memRedCount}`;
+            syncEl.textContent = bm.inSync ? tt('inSync', '同步') : `${bm.redCount}/${bm.memRedCount}`;
             syncEl.className = bm.inSync ? 'ok' : 'warn';
             $('path-hint').textContent = bm.path;
         } else {
-            $('map-name').textContent = s.tosu.up ? '等待 osu! 打开制谱器…' : '未连接 tosu';
+            $('map-name').textContent = tt('waitingOsu', '等待 osu! 打开制谱器…');
             $('map-file').textContent = '';
             $('stat-red').textContent = '0';
             $('stat-green').textContent = '0';
             $('stat-sync').textContent = '—';
             $('stat-sync').className = '';
-            $('path-hint').textContent = s.osu.installDir ? `osu! 目录：${s.osu.installDir}` : '未找到 osu! 安装目录';
+            $('path-hint').textContent = s.osu.installDir
+                ? tt('osuDir', 'osu! 目录：') + s.osu.installDir
+                : tt('noOsuDir', '未找到 osu! 安装目录');
         }
     }
 

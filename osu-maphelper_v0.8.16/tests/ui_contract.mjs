@@ -336,13 +336,50 @@ console.log('\n=== ⑫ 节拍线延迟跟随软件 ===');
         /beatLineDelayFollowSoftware:\s*true/.test(cfgMjs));
 
     // —— 快照：下发「生效值」，且必须克隆配置（不能污染 loadConfig 缓存） ——
+    // ★ v0.8.16：cfgOut 改成多行（同时覆盖延迟与语言两项），断言随之改为
+    //   「展开 cfgNow + 展开 cfgNow.visual + 覆盖 beatLineDelayMs」三个语义片段，
+    //   仍然保证没有直接改 cfgNow（改了就污染缓存、把软件值写进 config.json）。
     ok('app.mjs 引入 bpmSettings', /from '\.\/bpmSettings\.mjs'/.test(appMjs));
     ok('有 bpmDelayState()（跟随时取软件值，读不到才退回手动值）',
         /function bpmDelayState/.test(appMjs) && /effectiveMs/.test(appMjs));
     ok('快照里**克隆** config 再覆盖延迟（直接改会污染缓存并写错 config.json）',
-        /const cfgOut = \{ \.\.\.cfgNow, visual: \{ \.\.\.cfgNow\.visual, beatLineDelayMs: bpmDelay\.effectiveMs \}/.test(appMjs));
+        /const cfgOut = \{[\s\S]{0,200}?\.\.\.cfgNow,[\s\S]{0,200}?visual: \{ \.\.\.cfgNow\.visual,[\s\S]{0,200}?beatLineDelayMs: bpmDelay\.effectiveMs/.test(appMjs));
     ok('快照下发 cfgOut 且附带 bpmDelay 来源信息',
         /config: cfgOut/.test(appMjs) && /bpmDelay,/.test(appMjs));
+
+    // ★ v0.8.16 新增：语言同步（修 Bug 1 的侧栏半边）
+    ok('config.visual 有 langFollow 且默认 true',
+        /langFollow:\s*true/.test(cfgMjs));
+    ok('config.visual 有 lang 字段',
+        /lang:\s*'zh'/.test(cfgMjs));
+    ok('有 langState()（跟随时取软件语言，读不到才退回侧栏值）',
+        /function langState/.test(appMjs) && /softwareLang/.test(appMjs));
+    ok('bpmSettings 提供 readBpmLang（读软件 localStorage 的 lang）',
+        /export function readBpmLang/.test(bpmMjs));
+    ok('快照 config 注入生效语言（前端据此渲染）',
+        /lang: lang\.effective/.test(appMjs));
+    ok('快照附带 lang 来源信息',
+        /\n\s*lang,\n/.test(appMjs));
+    ok('路由 /api/bpm-settings 回传 lang',
+        /lang: typeof s\.lang === 'string'/.test(routerMjs));
+    ok('设置页有语言区块（跟随开关 / 下拉 / 重新读取 / 来源提示）',
+        /id="cfg-lang-follow"/.test(settingsHtml) && /id="cfg-lang"/.test(settingsHtml) &&
+        /id="btn-lang-reload"/.test(settingsHtml) && /id="lang-src"/.test(settingsHtml));
+    ok('语言开关写回 config.visual.langFollow', /langFollow:\s*on/.test(settingsPnl));
+    ok('语言下拉写回 config.visual.lang', /visual: \{ lang: e\.target\.value \}/.test(settingsPnl));
+    ok('跟随时语言下拉禁用（避免"选了没反应"的困惑）', /langSel\.disabled = langFollow/.test(settingsPnl));
+    ok('侧栏 i18n 模块存在', fs.existsSync(path.join(R, 'i18n.js')));
+    ok('所有面板页都引入了 i18n.js', ['index', 'settings', 'viz', 'map', 'backup', 'log']
+        .every((n) => /i18n\.js/.test(fs.readFileSync(path.join(R, n + '.html'), 'utf8'))));
+    {
+        const stJs = fs.readFileSync(path.join(R, 'state.js'), 'utf8');
+        const i18Js = fs.readFileSync(path.join(R, 'i18n.js'), 'utf8');
+        ok('state.js 轮询时自动套用语言（语言变化才重刷 DOM）',
+            /applyLangFromState/.test(stJs) && /_appliedLang/.test(stJs));
+        ok('i18n 字典含 9 语言且 zh 为兜底',
+            /var LANGS = \['zh', 'en', 'ja', 'ko', 'fr', 'de', 'es', 'ru', 'pt'\]/.test(i18Js) &&
+            /entry\[current\] \|\| entry\.zh/.test(i18Js));
+    }
     ok('提供强制重读入口 syncBpmSettings()', /syncBpmSettings\(\)/.test(appMjs));
     ok('路由有 POST /api/bpm-settings（忽略缓存重读）',
         /'\/api\/bpm-settings'/.test(routerMjs) && /app\.syncBpmSettings\(\)/.test(routerMjs));

@@ -87,6 +87,11 @@ export const DEFAULT_CONFIG = {
         //   这里通过读软件的 localStorage 实现同步，见 src/bpmSettings.mjs。
         beatLineDelayFollowSoftware: true, // true=用软件里的值（默认，推荐）；false=用下面的手动值
         beatLineDelayMs: 30, // 手动值：仅在「不跟随软件」或读不到软件设置时生效
+        // ★ v0.8.16：界面语言，同样默认「跟随 BPM 测速助手」——
+        //   在软件里换了语言，侧栏各窗口下次轮询就跟着变，无需重启。
+        //   读不到软件设置时退回 lang 手动值；两者都拿不到则中文。
+        langFollow: true, // true=用软件里的语言（默认）；false=用下面的手动语言
+        lang: 'zh', // 手动语言：仅在「不跟随软件」或读不到软件设置时生效（zh/en/ja/ko/fr/de/es/ru/pt）
         fftSize: 1024, // FFT 采样点数（512/1024/2048/4096，越大频率分辨率越高）
         sensitivity: 75, // 显示灵敏度 dB 阈值（60~120，越小越敏感）
         logBase: 50, // 频率轴对数底（1 = 线性；越大低频越展开）

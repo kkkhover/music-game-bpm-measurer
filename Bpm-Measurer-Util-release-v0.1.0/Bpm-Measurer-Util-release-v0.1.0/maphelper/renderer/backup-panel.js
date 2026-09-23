@@ -13,7 +13,9 @@
 
     function render(s) {
         const bk = s.backup;
-        $('bk-next').textContent = bk.enabled ? fmtCountdown(bk.nextRunAt) : '已停用';
+        $('bk-next').textContent = bk.enabled
+            ? fmtCountdown(bk.nextRunAt)
+            : (window.I18N ? window.I18N.t('disabled') : '已停用');
         $('bk-count').textContent = bk.count;
         $('bk-size').textContent = fmtSize(bk.usageBytes);
         $('bk-dir').textContent = bk.dir + (bk.lastError ? `  ⚠ ${bk.lastError}` : '');

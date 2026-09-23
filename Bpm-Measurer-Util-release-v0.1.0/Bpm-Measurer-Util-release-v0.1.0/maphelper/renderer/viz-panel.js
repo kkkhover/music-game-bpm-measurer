@@ -495,7 +495,7 @@
                 audioFailedKey = '';
                 stopPreview();
                 viz.clearAudio();
-                $('viz-status').textContent = '无音频';
+                $('viz-status').textContent = (window.I18N ? window.I18N.t('noAudio') : '无音频');
             }
             return;
         }
@@ -504,7 +504,7 @@
         if (audioFailedKey === path) return;
         if (audioLoading) return;
         audioLoading = true;
-        $('viz-status').textContent = '解码中…';
+        $('viz-status').textContent = (window.I18N ? window.I18N.t('decoding') : '解码中…');
         try {
             const r = await fetch('/api/audio', { cache: 'no-store' });
             if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -516,10 +516,10 @@
             audioFailedKey = '';
             stopPreview();
             viz.setAudio(decoded, path);
-            $('viz-status').textContent = bm.audioName || '已载入';
+            $('viz-status').textContent = bm.audioName || (window.I18N ? window.I18N.t('loaded') : '已载入');
         } catch (e) {
             audioFailedKey = path;
-            $('viz-status').textContent = '解码失败';
+            $('viz-status').textContent = (window.I18N ? window.I18N.t('decodeFailed') : '解码失败');
         } finally {
             audioLoading = false;
         }

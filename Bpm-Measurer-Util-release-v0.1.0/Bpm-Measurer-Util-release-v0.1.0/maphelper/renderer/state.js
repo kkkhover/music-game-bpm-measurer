@@ -29,8 +29,10 @@
         if (!ts) return '—';
         const d = Math.max(0, ts - Date.now());
         const s = Math.round(d / 1000);
-        if (s < 60) return `${s} 秒后`;
-        return `${Math.floor(s / 60)} 分 ${s % 60} 秒后`;
+        // ★ v0.8.16：文案走 i18n（没有 i18n 模块时退回中文，保证脚本单独跑也不炸）
+        const T = window.I18N;
+        if (s < 60) return T ? T.t('secLater', { n: s }) : `${s} 秒后`;
+        return T ? T.t('minSecLater', { m: Math.floor(s / 60), s: s % 60 }) : `${Math.floor(s / 60)} 分 ${s % 60} 秒后`;
     }
 
     function fmtSize(b) {
@@ -71,6 +73,22 @@
     }
 
     // 轮询：返回一个可停止的句柄
+    // ★ v0.8.16：默认在每次拿到快照后自动套用「生效语言」（config.visual.lang）。
+    //   语言由主进程算好（跟随时=BPM 测速助手里的语言），前端只负责渲染。
+    //   只有语言真的变了才重新 applyTo + 触发 onLangChange 回调，避免每 100ms 白刷 DOM。
+    let _appliedLang = null;
+    const _langCbs = [];
+    function onLangChange(cb) { _langCbs.push(cb); }
+    function applyLangFromState(s) {
+        if (!window.I18N) return;
+        const lang = s && s.config && s.config.visual ? s.config.visual.lang : null;
+        if (!lang || lang === _appliedLang) return;
+        _appliedLang = lang;
+        window.I18N.setLang(lang);
+        window.I18N.applyTo(document);
+        for (const cb of _langCbs) { try { cb(lang); } catch (e) { /* 单个回调出错不影响其它 */ } }
+    }
+
     function startPoll(render, intervalMs = 100) {
         let stopped = false;
         let polling = false;
@@ -79,7 +97,9 @@
             polling = true;
             try {
                 const s = await fetch('/api/state', { cache: 'no-store' }).then((x) => x.json());
-                if (!stopped) render(s);
+                if (stopped) { polling = false; return; }
+                applyLangFromState(s); // 先同步语言，再渲染（render 里可能用到 t()）
+                render(s);
             } catch (e) {
                 /* 服务没起来就静默重试 */
             }
@@ -125,5 +145,5 @@
         setInterval(sync, 500);
     })();
 
-    window.S = { $, fmtTime, fmtMs, fmtCountdown, fmtSize, fmtBpm, setOn, escapeHtml, post, saveCfg, startPoll, openPanel, togglePin, pinState };
+    window.S = { $, fmtTime, fmtMs, fmtCountdown, fmtSize, fmtBpm, setOn, escapeHtml, post, saveCfg, startPoll, onLangChange, applyLangFromState, openPanel, togglePin, pinState };
 })();
