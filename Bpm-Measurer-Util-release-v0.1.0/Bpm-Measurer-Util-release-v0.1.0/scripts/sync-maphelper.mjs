@@ -1,20 +1,6 @@
-// ============================================================================
-// 把「制谱侧栏」(osu-maphelper) 导入本软件 —— 生成集成副本 maphelper/
-// ============================================================================
-// 背景：
-//   侧栏一直是在独立的 osu-maphelper_v<版本> 目录里**单独开发**的。
-//   要让它"长在软件身上"，就把它的整棵树复制一份到本项目的 maphelper/，
-//   打包时随 package.json 的 files 一起进 <resources>\app\maphelper\，
-//   于是软件自带的 exe 加一个 --maphelper 参数就能当侧栏跑（见根目录 boot.cjs）。
-//
-// 用法：
-//   node scripts/sync-maphelper.mjs
-//   环境变量 MAPHELPER_SRC_ROOT 可指定侧栏源码所在的大目录。
-//
-// 注意：
-//   maphelper/ 是**生成物**，不要在里面直接改代码 —— 改了下次同步就没了。
-//   要改侧栏请改 osu-maphelper_v<版本>/ 里的源码，再跑一次本脚本。
-// ============================================================================
+// 把「osu! 制谱侧栏」源码同步成集成副本 maphelper/，随主程序一起打包。
+// 用法：node scripts/sync-maphelper.mjs
+// 说明：maphelper/ 是生成物，不要在里面改代码；改侧栏源码后再跑一次。
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,22 +9,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT = path.resolve(__dirname, '..');
 const TARGET = path.join(PROJECT, 'maphelper');
 
-// 侧栏源码可能所在的大目录（按顺序找，第一个命中为准）
-// ★ v0.8.16：**去掉了写死的本机路径**（原审计 P1-3）。
-//   原来最后一项硬编码 'D:\tmp\新建文件夹\bpm app' —— 那是开发机专有路径，
-//   换到别人的机器 / 交付包里必然不存在，只会白扫一次目录。
-//   现在只认这三处，已经能覆盖所有真实场景：
-//     ① 环境变量 MAPHELPER_SRC_ROOT（CI / 特殊布局用）
-//     ② 主程序上一级目录（**交付包的结构**：bpm app v0.8.16\{软件, 源码, osu-maphelper_v*}
-//        里侧栏与源码同级；也覆盖本地并排开发的布局）
-//     ③ 再上一级目录（本地开发时侧栏放在工作区子目录里的情况）
-const SEARCH_ROOTS = [
-    process.env.MAPHELPER_SRC_ROOT || '',
-    path.resolve(PROJECT, '..'),
-    path.resolve(PROJECT, '..', '..')
-].filter(Boolean);
+// 候选根目录：环境变量优先，然后从主程序目录逐级向上找（覆盖仓库、并排开发、交付包三种布局）
+const SEARCH_ROOTS = [];
+if (process.env.MAPHELPER_SRC_ROOT) SEARCH_ROOTS.push(process.env.MAPHELPER_SRC_ROOT);
+let cursor = PROJECT;
+for (let i = 0; i < 6; i++) {
+    const parent = path.resolve(cursor, '..');
+    if (path.dirname(parent) === parent) break; // 到盘符根就停，不再往上扫
+    cursor = parent;
+    SEARCH_ROOTS.push(cursor);
+}
 
-/** 任何层级都不进集成副本的目录（依赖 / 日志 / 用户备份 / 版本控制） */
+/** 任何层级都不进集成副本的目录 */
 const SKIP_ANYWHERE = new Set(['node_modules', 'logs', 'backups', '.git']);
 /** 只在顶层跳过的目录（测试与截图产物，交付包里用不到） */
 const SKIP_TOPDIR = new Set(['tests']);
@@ -64,20 +46,19 @@ function isSidebarDir(dir) {
     );
 }
 
-/** 在候选根目录里找版本号最高的侧栏源码 */
+/** 在候选根目录里找版本号最高的侧栏源码；找不到 osu-maphelper* 时兼容交付包的「侧栏/」布局 */
 function findSource() {
     for (const root of SEARCH_ROOTS) {
         if (!root || !fs.existsSync(root)) continue;
         let entries = [];
         try {
-            entries = fs
-                .readdirSync(root)
-                .filter((n) => n.startsWith('osu-maphelper'))
-                .sort(byVersionDesc);
+            entries = fs.readdirSync(root);
         } catch {
             continue;
         }
-        for (const name of entries) {
+        const versioned = entries.filter((n) => n.startsWith('osu-maphelper')).sort(byVersionDesc);
+        const aliases = entries.filter((n) => n === '侧栏' || n === 'sidebar');
+        for (const name of [...versioned, ...aliases]) {
             const dir = path.join(root, name);
             if (isSidebarDir(dir)) return dir;
         }
@@ -96,9 +77,6 @@ function isOurArtifact(dir) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 正文
-// ---------------------------------------------------------------------------
 const src = findSource();
 
 if (!src) {
@@ -106,14 +84,14 @@ if (!src) {
         console.log('[同步] 未找到侧栏源码目录，沿用已有的集成副本：', TARGET);
         process.exit(0);
     }
-    console.error('[同步] 找不到侧栏源码（需要含 package.json + electron/main.cjs 的 osu-maphelper* 目录）。');
+    console.error('[同步] 找不到侧栏源码（需要含 package.json + electron/main.cjs 的 osu-maphelper* 或 侧栏 目录）。');
     console.error('       已查找：');
     for (const r of SEARCH_ROOTS) console.error('         ' + r);
     console.error('       可用环境变量 MAPHELPER_SRC_ROOT 指定它所在的大目录。');
     process.exit(1);
 }
 
-// 安全阀：只有在确认是"上一轮的生成物"时才整目录删；否则宁可不删
+// 安全阀：只有确认是上一轮的生成物时才整目录删
 if (fs.existsSync(TARGET)) {
     if (!isOurArtifact(TARGET)) {
         console.error('[同步] 目标目录已存在且不像本脚本的生成物，为安全起见不覆盖：', TARGET);
@@ -130,7 +108,7 @@ fs.cpSync(src, TARGET, {
     force: true,
     filter: (s) => {
         const rel = path.relative(src, s);
-        if (!rel) return true; // 根目录本身
+        if (!rel) return true;
         const segs = rel.split(path.sep);
         if (segs.some((x) => SKIP_ANYWHERE.has(x))) return false;
         if (SKIP_TOPDIR.has(segs[0])) return false;
@@ -141,7 +119,7 @@ fs.cpSync(src, TARGET, {
                 bytes += st.size;
             }
         } catch {
-            /* 忽略：filter 只做统计 */
+            /* 统计用 */
         }
         return true;
     }
@@ -149,34 +127,25 @@ fs.cpSync(src, TARGET, {
 
 const ver = JSON.parse(fs.readFileSync(path.join(TARGET, 'package.json'), 'utf8')).version;
 
-// ---------------------------------------------------------------------------
-// 规范化随包发布的 config.json
-//
-// 源码目录里的 config.json 是**开发机上跑出来的**，里面带着这台机器才成立的字段：
-//   osu.installDir / osu.songsDir  → 别人机器上根本不存在这个路径
-//   window.x / window.y / panels.*.x|y → 换台分辨率不同的机器，窗口会摆到屏幕外
-// 直接发出去的表现就是"装完打开，窗口不见了 / 找不到 osu!"。
-// 所以这里把这些「机器绑定」字段清回默认（自动探测 + 自动摆位），
-// 而用户偏好类（配色/音量/FFT/灵敏度/是否跟随软件…）是跨机器通用的，保留。
-// ---------------------------------------------------------------------------
+// 清掉 config.json 里与本机绑定的字段（osu! 路径、窗口坐标），保留用户偏好
 const cfgPath = path.join(TARGET, 'config.json');
 if (fs.existsSync(cfgPath)) {
     const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
     if (cfg.osu) {
-        cfg.osu.installDir = ''; // 留空 = 启动时自动探测
+        cfg.osu.installDir = '';
         cfg.osu.songsDir = '';
     }
     if (cfg.window) {
-        cfg.window.x = null; // null = 自动贴到 osu! 窗口旁边
+        cfg.window.x = null;
         cfg.window.y = null;
     }
-    cfg.panels = {}; // 各功能窗口的位置/尺寸一律回到默认
-    cfg.backup = { ...cfg.backup, dir: '' }; // 备份目录留空 = 用（打包后的）用户数据区
+    cfg.panels = {};
+    cfg.backup = { ...cfg.backup, dir: '' };
     fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
-    console.log('[同步] 已清掉 config.json 里与机器绑定的字段（osu! 路径 / 窗口坐标）');
+    console.log('[同步] 已清掉 config.json 里与机器绑定的字段');
 }
 
-// 抽查关键文件，漏了就直接报错（打包缺文件最难查）
+// 抽查关键文件，漏了直接报错（打包缺文件最难查）
 const must = [
     'package.json',
     'config.json',
