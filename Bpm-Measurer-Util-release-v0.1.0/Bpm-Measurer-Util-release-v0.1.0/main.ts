@@ -10,14 +10,70 @@ const __dirname = path.dirname(__filename);
 // ===== GPU/渲染优化（笔记本 Intel 核显 / NVIDIA 独显兼容）=====
 // 强制 D3D11（Chromium 在混合显卡下默认可能跑核显或软件回退，D3D11 对 NVIDIA/Intel 驱动更稳定）
 app.commandLine.appendSwitch('use-angle', 'd3d11');
-// 启用 2D canvas 硬件加速（频谱/波形绘制）
-app.commandLine.appendSwitch('enable-accelerated-2d-canvas');
 // 忽略 GPU 黑名单（避免 Intel 老驱动被 Chromium 禁硬件加速 → 软件渲染卡顿）
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
 // 优先使用独立显卡（Optimus 笔记本上尽量选 NVIDIA）
 app.commandLine.appendSwitch('prefer-integrated-gpu', 'false');
+// 2D canvas 硬件加速：频谱/波形是「整幅重绘 + 大块 putImageData」型负载。
+// 实测（本机 Radeon 780M 核显 + 6.8GB 内存、可用 ~1GB）打开它反而更慢：
+// 每次缩放要重传 1920×1153 的纹理，核显显存和主存是同一块 → 直接触发换页，
+// 单帧被拖到 800~3700ms（CPU 侧却是 98% 空闲）。关闭后走 CPU 光栅，反而稳。
+// 由环境变量 BPM_CANVAS_GPU=1 可强制打开，方便在别的机器上对比。
+if (process.env.BPM_CANVAS_GPU === '1') {
+  app.commandLine.appendSwitch('enable-accelerated-2d-canvas');
+}
+
+// ============================================================================
+// 本机性能档案（低配自适应）
+// ============================================================================
+// 为什么要探测：频谱/波形是「整曲 × 缩放 × 渲染倍率」叠出来的多层 canvas。
+// 在 8GB 内存且已被占满的笔记本上（本机就是：总量 6.8GB、可用常年 < 1GB），
+// 这些 canvas 会把主存和核显共享显存一起挤爆 → 系统开始用页面文件 →
+// 拖频谱/滚轮缩放时整机发粘，看起来像"软件卡"，其实是内存被打穿。
+// 判决只看内存，因为这是低配机上最先崩的一环；GPU 弱一点还能靠降分辨率顶住。
+function detectPerfProfile() {
+  let totalKB = 0;
+  let freeKB = 0;
+  try {
+    // getSystemMemoryInfo 是 Electron 主进程专属 API（单位 KB）
+    const info = (process as any).getSystemMemoryInfo();
+    totalKB = info?.total ?? 0;
+    freeKB = info?.free ?? 0;
+  } catch {
+    /* 取不到就按常规机器处理（不降级） */
+  }
+  const totalGB = totalKB / 1048576;
+  const freeGB = freeKB / 1048576;
+  // ≤8.5GB 总量（即物理 8GB）或可用不足 1.2GB → 判定为内存吃紧
+  const lowEnd = totalKB > 0 && (totalGB <= 8.5 || freeGB < 1.2);
+  return { totalGB, freeGB, lowEnd };
+}
+
+const PERF_PROFILE = detectPerfProfile();
+
+if (PERF_PROFILE.lowEnd) {
+  // 1) 别让 Chromium 因为窗口被遮挡就把渲染降频/暂停（本软件常和 osu! 等窗口叠着用）
+  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+  // 2) 窗口失焦时不降后台渲染优先级（边看谱边切窗口时不至于一回来就卡一下）
+  app.commandLine.appendSwitch('disable-renderer-backgrounding');
+  console.log(
+    `[perf] 低配模式：总内存 ${PERF_PROFILE.totalGB.toFixed(1)}GB / 可用 ${PERF_PROFILE.freeGB.toFixed(2)}GB`
+  );
+}
 
 let mainWindow: BrowserWindow | null = null;
+
+// 解析启动参数里的音频文件：支持 `--open-audio=<路径>`，也支持把音频直接拖到 exe 图标上（裸路径参数）
+const AUDIO_EXT_RE = /\.(wav|mp3|flac|aac|ogg|wma)$/i;
+function getAutoOpenPath(): string | null {
+  const args = process.argv.slice(app.isPackaged ? 1 : 2);
+  for (const raw of args) {
+    const val = raw.startsWith('--open-audio=') ? raw.slice('--open-audio='.length) : raw;
+    if (!val || val.startsWith('-') || !AUDIO_EXT_RE.test(val)) continue;
+    try { if (fs.existsSync(val)) return path.resolve(val); } catch { /* 路径异常就当没有 */ }
+  }
+  return null;
+}
 
 const createWindow = () => {
   mainWindow = new BrowserWindow({
@@ -28,7 +84,10 @@ const createWindow = () => {
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
-      contextIsolation: true
+      contextIsolation: true,
+      // 窗口被遮挡/最小化时不节流渲染循环：本软件播放时要靠 rAF 推播放头，
+      // 一旦被降频，切回来会出现播放头"跳一格"的错觉。
+      backgroundThrottling: false
     },
     backgroundColor: '#0f0f0f',
     show: false,
@@ -50,10 +109,23 @@ const createWindow = () => {
     mainWindow?.show();
   });
 
+  // 启动参数里带了音频路径（--open-audio=<path> 或直接把文件拖到 exe 上）→ 页面就绪后自动载入
+  const autoOpenPath = getAutoOpenPath();
+  if (autoOpenPath) {
+    mainWindow.webContents.once('did-finish-load', () => {
+      mainWindow?.webContents.send('auto-open-audio', autoOpenPath);
+    });
+  }
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
 };
+
+// 渲染进程启动时同步取一次性能档案（一次同步 IPC，开销可忽略）
+ipcMain.on('get-perf-profile', (event) => {
+  event.returnValue = PERF_PROFILE;
+});
 
 ipcMain.handle('open-audio-file', async () => {
   if (!mainWindow) return null;

@@ -38,6 +38,7 @@ docs/reports/
 
 # 工作区临时文件
 _*/
+.tmp/
 _*.mjs
 _*.js
 _*.txt

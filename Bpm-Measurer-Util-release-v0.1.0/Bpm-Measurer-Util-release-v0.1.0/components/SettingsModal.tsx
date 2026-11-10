@@ -265,7 +265,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onChange, onRes
             <div className="mt-3 pt-3 border-t border-[var(--line)]">
               <div className="flex justify-between items-center mb-1.5">
                 <span className="text-[10px] text-[var(--t3)] uppercase font-bold tracking-widest">{t('renderScale')}</span>
-                <span className="text-xs font-mono text-[var(--accent)] font-bold">{Math.round(settings.renderScale * 100)}%</span>
+                <span className="text-xs font-mono text-[var(--accent)] font-bold">{Math.round(settings.renderScale * 100)}%{Math.abs(settings.renderScale - 1) < 0.001 ? ' · 1080p' : ''}</span>
               </div>
               <input
                 type="range" min={0.25} max={2} step={0.05}

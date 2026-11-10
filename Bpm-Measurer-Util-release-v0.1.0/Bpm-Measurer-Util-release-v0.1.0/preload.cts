@@ -9,6 +9,15 @@ import { contextBridge, ipcRenderer } from 'electron';
 //   因此源码用 `.cts` 扩展名 —— TypeScript 会强制把它编译成 CommonJS 的 preload.cjs。
 //   对应的构建配置见 tsconfig.preload.json，主进程引用路径见 main.ts。
 contextBridge.exposeInMainWorld('electronAPI', {
+  // 本机性能档案（低配自适应用）：{ totalGB, freeGB, lowEnd }
+  // 用 sendSync 是因为渲染进程首帧就要按它决定渲染倍率，异步拿会让画面先按高分辨率建一次画布。
+  getPerfProfile: () => ipcRenderer.sendSync('get-perf-profile'),
+  // 主进程在启动参数里发现音频文件时会推一条路径过来（--open-audio / 拖文件到 exe 上）
+  onAutoOpenAudio: (cb: (filePath: string) => void) => {
+    const listener = (_e: unknown, filePath: string) => cb(filePath);
+    ipcRenderer.on('auto-open-audio', listener);
+    return () => { ipcRenderer.removeListener('auto-open-audio', listener); };
+  },
   openAudioFile: () => ipcRenderer.invoke('open-audio-file'),
   // 读取音频文件内容（返回 Uint8Array，供渲染进程解码）
   readAudioFile: (filePath: string) => ipcRenderer.invoke('read-audio-file', filePath),

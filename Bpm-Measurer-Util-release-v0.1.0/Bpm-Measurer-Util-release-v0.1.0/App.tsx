@@ -20,7 +20,11 @@ import { t, setLang } from './utils/i18n';
 
 const MIN_ZOOM = 10;
 const MAX_ZOOM = 1500;
-const DEFAULT_ZOOM = 250; 
+const DEFAULT_ZOOM = 250;
+// ★ v0.8.21 视口自动跟随：播放头越过视口右侧 90% → 视口**直接跳到**下一页，播放头落回左侧 10%
+//   与侧栏点击段落一致：瞬跳，不做滚动动画（v0.8.20 的「分帧滚动过去」已移除）。
+const FOLLOW_TRIGGER_RATIO = 0.9;
+const FOLLOW_LEAD_RATIO = 0.1;
 
 interface TimingRowProps {
     point: TimingPoint;
@@ -323,6 +327,16 @@ function App() {
     setLang(d.lang);
   }, []);
 
+  // ===== 固定 1080p 渲染 =====
+  // 画布位图宽度由 Visualizer 锁死为 1920 设备像素（与屏幕缩放/窗口大小无关），这里只给
+  // 「清晰度微调倍率」：1.0 = 正好 1080p（默认），<1 更省，>1 更清晰（更吃内存）。
+  // 旧版本用户为了对抗卡顿常把 renderScale 调到 0.5（位图只有 ~960px 宽，糊得厉害），
+  // 迁移逻辑会把它恢复成 1.0 —— 渲染路径已重写，不该再靠糊画质换流畅。
+  const renderDpr = useMemo(
+    () => Math.max(0.5, Math.min(2, settings.renderScale)),
+    [settings.renderScale]
+  );
+
   // 音乐主音量（masterGain），所有音频源经此输出
   const masterGainRef = useRef<GainNode | null>(null);
   if (!masterGainRef.current) {
@@ -406,11 +420,36 @@ function App() {
   const playbackRateRef = useRef(1.0);
   const playheadRef = useRef(0); // 播放头位置（秒）：每帧更新，供 Visualizer 独立播放头层实时读取（不经过 React 渲染）
   
-  const timingPoints = recalculateTiming(globalOffset, rawPoints);
+  // ★ v0.8.19：这里必须 useMemo。
+  //   recalculateTiming 每次调用都返回新数组，而播放时 currentTime 每 100ms 触发一次 App 重渲染，
+  //   于是 timingPoints 引用每 100ms 变一次 → Visualizer 里所有依赖它的绘制 effect 全部重跑，
+  //   其中「拍线覆盖层」要把满屏上千条拍线整幅重画 → 导入 timing 之后就开始明显卡。
+  //   依赖只有 offset 与原始点集，缓存后数组引用稳定，绘制 effect 不再被无意义唤醒。
+  const timingPoints = useMemo(() => recalculateTiming(globalOffset, rawPoints), [globalOffset, rawPoints]);
   const [viewState, setViewState] = useState<ViewState>({ zoom: DEFAULT_ZOOM, scrollLeft: 0 });
+  /**
+   * ★ v0.8.20：视口自动跟随播放头。
+   *   播放时白条滑出当前可视区域（越过右边界），视口自动"翻页"到下一区域，
+   *   让白条落回视口左侧 —— 长曲目不用再手动拖时间轴。
+   *   用户主动拖动/滚动时间轴时自动关闭（否则想看别处会被立刻拽回），可用底部按钮重新开启。
+   */
+  const [followPlayhead, setFollowPlayhead] = useState(true);
+  // 底部缩放输入框的文字状态（可键入）。正在输入时不被外部变化打断。
+  const [zoomText, setZoomText] = useState(String(Math.round(DEFAULT_ZOOM)));
+  const zoomFocusRef = useRef(false);
+  useEffect(() => {
+      if (!zoomFocusRef.current) setZoomText(String(Math.round(viewState.zoom)));
+  }, [viewState.zoom]);
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
   const [containerHeight, setContainerHeight] = useState(0);
+  // 播放 loop 不随渲染重建（依赖稳定），因此下面这些"最新值"必须走 ref 读取
+  const containerWidthRef = useRef(0);
+  containerWidthRef.current = containerWidth;
+  const viewStateRef = useRef(viewState);
+  viewStateRef.current = viewState;
+  const followRef = useRef(followPlayhead);
+  followRef.current = followPlayhead;
 
   // 当前播放位置所属段落的 BPM（footer 显示）
   const currentBpm = useMemo(() => {
@@ -462,6 +501,7 @@ function App() {
   const lastScheduledIndexRef = useRef<number>(-Infinity);
   const currentTimeRef = useRef<number>(0); // 与 currentTime state 同步，供 play/handleSeek 读取最新值
   const uiFrameRef = useRef(0); // UI 显示降频计数器：播放头由独立层驱动，时间码/总览条 ~10fps 足够
+  const lastUiPublishRef = useRef(0); // 上次把播放位置推给 React 的时间（ms）
 
   useLayoutEffect(() => {
     if (!containerRef.current) return;
@@ -571,11 +611,30 @@ function App() {
   //   但为了彻底避免 TDZ 隐患，这里用 ref 转发：下方 stop() 定义后立刻把最新实现写进这个 ref。
   const stopRef = useRef<() => void>(() => {});
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement> | null = null) => {
-    let file: File | null = null;
-    
-    // Check if Electron is available（通过 preload 暴露的 electronAPI 走原生文件对话框）
-    if (typeof window !== 'undefined' && 'electronAPI' in window) {
+  // forcedPath：命令行 --open-audio=<路径> / 拖文件到 exe 上的自动打开（跳过文件对话框）
+  const [importing, setImporting] = useState(false);
+  const importingRef = useRef(false);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement> | null = null, forcedPath?: string) => {
+    // ★ v0.8.19 修「要导入两次才成功」：
+    //   顶栏「导入音频」是个 <label> 包 <input type=file>，点它 **浏览器已经弹过一次系统文件框**，
+    //   选完文件后 onChange 才把 e 交进来。旧代码不管 e、一律先走 electronAPI.openAudioFile()，
+    //   于是又弹第二次对话框 → 第一次选的文件被丢弃，用户感觉"第一次导入没反应"。
+    //   现在：只要 e 里已经带了文件，就直接用它，绝不再弹框。
+    const picked = e?.target?.files?.[0] ?? null;
+    if (picked && e?.target) e.target.value = ''; // 允许再次选择同一个文件（否则 change 不再触发）
+    if (!picked && importingRef.current) return;  // 另一个导入还在解码 → 忽略重复触发
+
+    let file: File | null = picked;
+
+    if (!file && forcedPath) {
+      setAudioPath(forcedPath); // 留住绝对路径，供「导出 Malody 谱面包」打包音频用
+      const data = await (window as any).electronAPI.readAudioFile(forcedPath);
+      if (data) {
+        const arrayBuffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+        file = new File([arrayBuffer], forcedPath.split(/[\\/]/).pop() || 'unknown', { type: 'audio/*' });
+      }
+    } else if (!file && typeof window !== 'undefined' && 'electronAPI' in window) {
       const filePath = await (window as any).electronAPI.openAudioFile();
       if (filePath) {
         setAudioPath(filePath); // 留住绝对路径，供「导出 Malody 谱面包」打包音频用
@@ -586,15 +645,17 @@ function App() {
           file = new File([arrayBuffer], filePath.split(/[\\/]/).pop() || 'unknown', { type: 'audio/*' });
         }
       }
-    } else if (e) {
-      // Browser environment
-      file = e.target.files?.[0] || null;
     }
-    
+
     if (!file) return;
     setFileName(file.name);
-    const arrayBuffer = await file.arrayBuffer();
+    // ★ 解码 7 分钟的歌要 1~3 秒，旧代码这段时间**没有任何反馈**（按钮不变、界面不动），
+    //   用户以为没反应就会再点一次 —— 这也是"要导入两次"的另一半原因。
+    importingRef.current = true;
+    setImporting(true);
+    const t0 = performance.now();
     try {
+        const arrayBuffer = await file.arrayBuffer();
         if (audioContext.state === 'suspended') await audioContext.resume();
         const decodedBuffer = await audioContext.decodeAudioData(arrayBuffer);
         const peaks = extractPeaks(decodedBuffer);
@@ -611,8 +672,26 @@ function App() {
         //   旧句柄永久丢失 → 之后按空格也停不掉它，只能等它自然播完。
         //   改成调用 stop()（内部会断开并置空旧 sourceNodeRef）才是彻底的停止。
         stopRef.current();
-    } catch (err) { console.error(err); alert(t('decodeError')); }
+        console.info(`[import] ${file.name} 解码完成 ${decodedBuffer.duration.toFixed(1)}s，耗时 ${Math.round(performance.now() - t0)}ms`);
+    } catch (err) {
+        console.error('[import] 解码失败：', err);
+        alert(t('decodeError'));
+    } finally {
+        importingRef.current = false;
+        setImporting(false);
+    }
   };
+
+  // 命令行 `--open-audio=<路径>`（把音频文件拖到 exe 图标上 / 资源管理器「打开方式」）→ 启动后自动载入
+  // 用 ref 转发，避免把 handleFileUpload 写进依赖导致监听器反复重建
+  const loadAudioRef = useRef(handleFileUpload);
+  loadAudioRef.current = handleFileUpload;
+  useEffect(() => {
+    const api = (window as any).electronAPI;
+    if (!api?.onAutoOpenAudio) return;
+    const off = api.onAutoOpenAudio((p: string) => { void loadAudioRef.current(null, p); });
+    return () => { off?.(); };
+  }, []);
 
   const handleExportJson = () => {
       const config = {
@@ -824,25 +903,36 @@ function App() {
   // ★ v0.8.16：把 stop 的实现写进 ref，供上方的 handleFileUpload 调用（避免 TDZ）
   stopRef.current = stop;
 
-  const play = useCallback(async () => {
+  /**
+   * 从 t 秒起重新起一个 BufferSource（只换声源，不碰 isPlaying / 不重建播放循环）。
+   * ★ v0.8.21 新增，修「播放中点白条 → 播放头与时间码整段冻死」：
+   *   旧 handleSeek 用的是 stop() + play()。两者在同一个事件里被 React 批处理成
+   *   isPlaying: false → true（最终值仍是 true），于是播放循环的 effect 不会重建，
+   *   而 stop() 已经把当前 rAF 取消了 → 声音还在放，播放头/时间码却再也不动。
+   */
+  const startSourceAt = useCallback((t: number) => {
     if (!audioData) return;
-    if (audioContext.state === 'suspended') await audioContext.resume();
-    // AudioBufferSourceNode：播放位置精确 = 起始偏移 + 墙钟流逝 × 倍速（进度/节拍器严格同步）
+    if (sourceNodeRef.current) { try { sourceNodeRef.current.stop(); } catch(e) {} }
+    const offset = Math.max(0, Math.min(audioData.duration, t));
     const source = audioContext.createBufferSource();
     source.buffer = audioData.buffer;
     source.connect(masterGainRef.current || audioContext.destination);
     source.playbackRate.value = playbackRateRef.current; // 变速（原生变速，音调随倍速变化）
-    const startOffset = Math.min(currentTimeRef.current, audioData.duration);
-    source.start(0, startOffset);
+    source.start(0, offset);
     sourceNodeRef.current = source;
     startTimeRef.current = audioContext.currentTime;
-    startOffsetRef.current = startOffset;
-    playheadRef.current = startOffset; // 播放头立即跳到起始位置
+    startOffsetRef.current = offset;
+    playheadRef.current = offset; // 播放头立即跳到新位置
+    lastScheduledIndexRef.current = -Infinity; // 新位置：下一帧从当地拍子重新调度节拍器
+  }, [audioData, audioContext]);
+
+  const play = useCallback(async () => {
+    if (!audioData) return;
+    if (audioContext.state === 'suspended') await audioContext.resume();
+    startSourceAt(currentTimeRef.current);
     uiFrameRef.current = 0;
-    const { point } = getPointAtTime(startOffset, timingPoints);
-    lastScheduledIndexRef.current = Math.floor(point.beatIndex + (startOffset - point.time) / (60 / point.bpm));
     setIsPlaying(true);
-  }, [audioData, audioContext, timingPoints]);
+  }, [audioData, audioContext, startSourceAt]);
 
   const togglePlay = useCallback(() => isPlaying ? stop() : play(), [isPlaying, play, stop]);
 
@@ -879,9 +969,29 @@ function App() {
         else {
             currentTimeRef.current = newTime;
             playheadRef.current = newTime; // 播放头独立层每帧实时读取（不经过 React）
-            // 时间码 / 总览条等 UI 显示降频到 ~10fps（每 6 帧一次），大幅降低 React 渲染压力
+            // ★ v0.8.21：白条滑出当前区域 → 视口**一帧直接跳到**下一区域（不做滚动动画，与侧栏切段一致）
+            if (followRef.current) {
+                const w = containerWidthRef.current;
+                if (w > 0) {
+                    const vs = viewStateRef.current;
+                    const targetX = newTime * vs.zoom;
+                    const x = targetX - vs.scrollLeft;
+                    if (x > w * FOLLOW_TRIGGER_RATIO || x < 0) {
+                        const maxScroll = Math.max(0, (audioData?.duration || 0) * vs.zoom - w);
+                        const next = Math.max(0, Math.min(targetX - w * FOLLOW_LEAD_RATIO, maxScroll));
+                        setViewState(v => (Math.abs(v.scrollLeft - next) < 0.5 ? v : { ...v, scrollLeft: next }));
+                    }
+                }
+            }
+            // 时间码 / 总览条等 UI 显示降频到 ~10fps：按「时间」而不是「帧数」计。
+            // 按帧数计的话，120Hz 屏上同一个 6 帧阈值会变成 20 次/秒，
+            // 等于白白让整棵组件树重渲染 20 次（低配机上这部分全是浪费）。
             uiFrameRef.current++;
-            if (uiFrameRef.current % 6 === 0) setCurrentTime(newTime);
+            const nowMs = performance.now();
+            if (nowMs - lastUiPublishRef.current >= 100) {
+                lastUiPublishRef.current = nowMs;
+                setCurrentTime(newTime);
+            }
             if (isMetronomeOn) {
                 // 红线节拍线延迟（秒）：节拍器声音与拍线/红线显示位置统一（正=随拍线后移，负=提前）
                 const beatDelaySec = settings.beatLineDelayMs / 1000;
@@ -920,26 +1030,41 @@ function App() {
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
   }, [isPlaying, audioContext, audioData, stop, isMetronomeOn, timingPoints, playClick, settings.beatLineDelayMs]);
 
-  const handleSeek = useCallback((time: number) => {
+  /**
+   * 跳转到 t 秒。
+   * ★ v0.8.21 修 bug：**播放中点击频谱 / 白条 / 总览条 → 停在该位置**（原来会"无缝续播"，
+   *   而 stop()+play() 被批处理掉之后播放头反而冻死）。
+   *   段间跳转（Alt+←→、侧栏卡片）传 keepPlaying，仍按"跳过去继续放"处理。
+   */
+  const handleSeek = useCallback((time: number, opts?: { keepPlaying?: boolean }) => {
     const t = Math.max(0, Math.min(audioData?.duration || 0, time));
     currentTimeRef.current = t;
     playheadRef.current = t;
     setCurrentTime(t);
-    // 若正在播放，从新位置无缝续播（体验更顺滑）
     if (sourceNodeRef.current) {
-      stop();
-      play();
+      if (opts?.keepPlaying) startSourceAt(t); // 换声源，播放循环不重建（播放头继续跟手）
+      else stop();                            // 停下，就停在点击的位置
     }
-    // 频谱视图跟随播放头：目标位置在视口外时滚动到视口中央
+    // 频谱视图：目标位置在视口外时把视口翻过去（播放头落在左侧 10%，与自动跟随一致）
     setViewState(v => {
         const maxScroll = Math.max(0, (audioData?.duration || 0) * v.zoom - containerWidth);
         const targetX = t * v.zoom;
         if (targetX < v.scrollLeft || targetX > v.scrollLeft + containerWidth) {
-            return { ...v, scrollLeft: Math.max(0, Math.min(targetX - containerWidth / 2, maxScroll)) };
+            return { ...v, scrollLeft: Math.max(0, Math.min(targetX - containerWidth * FOLLOW_LEAD_RATIO, maxScroll)) };
         }
         return v;
     });
-  }, [audioData, containerWidth, stop, play]);
+  }, [audioData, containerWidth, stop, startSourceAt]);
+
+  /**
+   * ★ v0.8.20：用户主动移动视口（拖拽平移 / 滚轮滚动）时关闭自动跟随。
+   *   否则播放中想把视口拖到别处看一下，下一帧就被跟随逻辑拽回播放头。
+   *   需要恢复跟随点底部按钮即可。
+   */
+  const handleUserScroll = useCallback((sl: number) => {
+      setFollowPlayhead(false);
+      setViewState(v => (v.scrollLeft === sl ? v : { ...v, scrollLeft: sl }));
+  }, []);
 
   // 调整播放倍速（0.25x - 2.0x）：原生 playbackRate 实时变速（变调），不打断播放
   const handleRateChange = useCallback((rate: number) => {
@@ -967,6 +1092,23 @@ function App() {
   }, []);
 
   /**
+   * ★ v0.8.19：底部缩放数值支持「直接键入」。
+   *   applyZoomValue 把绝对 px/s 写进视图，并以**视口中心**为锚点重算 scrollLeft
+   *   （输入 400 时，屏幕正中那段时间点保持不动，不会跳到别处）。
+   */
+  const applyZoomValue = useCallback((v: number) => {
+      if (!isFinite(v) || v <= 0) { setZoomText(String(Math.round(viewState.zoom))); return; }
+      const zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, v));
+      setViewState(s => {
+          const maxScroll = Math.max(0, (audioData?.duration || 0) * zoom - containerWidth);
+          const centerTime = containerWidth > 0 ? (s.scrollLeft + containerWidth / 2) / s.zoom : 0;
+          const scrollLeft = Math.max(0, Math.min(centerTime * zoom - containerWidth / 2, maxScroll));
+          return { zoom, scrollLeft };
+      });
+      setZoomText(String(Math.round(zoom)));
+  }, [audioData, containerWidth, viewState.zoom]);
+
+  /**
    * ★ v0.8.16：Alt+← / Alt+→ —— 切到上一段 / 下一段（与侧栏 Alt+←→ 行为对齐）。
    *   基准段 = **播放头当前所在的段**（不是"上次点过的段"），这样播放中按也符合直觉；
    *   切过去做三件事：播放头移到该段起点 + 视图把它滚到居中 + 右侧面板卡片滚过去高亮。
@@ -983,7 +1125,7 @@ function App() {
       const next = Math.max(0, Math.min(timingPoints.length - 1, idx + dir));
       const target = timingPoints[next];
       if (!target) return;
-      handleSeek(target.time);
+      handleSeek(target.time, { keepPlaying: true }); // 段间导航：播放中切段继续放，不打断试听
       // 视图居中（与 handleSeek 里"超出视区才居中"不同：这里是**明确要求**跳段，所以无条件居中）
       setViewState(v => {
           const maxScroll = Math.max(0, (audioData?.duration || 0) * v.zoom - containerWidth);
@@ -1039,6 +1181,30 @@ function App() {
       return () => window.removeEventListener('keydown', handleKeyDown);
   }, [togglePlay, undo, redo, handleFileUpload, handleExportJson, handleSeek, zoomBy, stepSection]);
 
+  /**
+   * ★ v0.8.19：变速段落卡片列表必须缓存。
+   *   导入 .osu 后可能有 **几百条红线**（本机测试谱 700+ 条），而播放时 currentTime 每 100ms
+   *   触发一次 App 重渲染。旧写法在 JSX 里直接 [...timingPoints].reverse().map(...)，
+   *   每次渲染都生成全新元素 → 几百张卡片全部重渲染，每秒 10 轮，主线程直接被填满。
+   *   用 useMemo 缓存元素后，React 拿到的是同一批元素对象，会整棵子树跳过，播放期间零成本。
+   */
+  const timingRows = useMemo(() => [...timingPoints].reverse().map((point, revIdx) => {
+      const originalIdx = timingPoints.length - 1 - revIdx;
+      return (
+          <TimingRow
+              key={point.id}
+              point={point}
+              index={originalIdx}
+              totalCount={timingPoints.length}
+              onUpdate={handleUpdatePoint}
+              onRemove={handleRemovePoint}
+              onUpdateTime={handleUpdatePointTime}
+              onJumpToTime={handleJumpToTimeline}
+              flash={flashSectionId === point.id}
+          />
+      );
+  }), [timingPoints, handleUpdatePoint, handleRemovePoint, handleUpdatePointTime, handleJumpToTimeline, flashSectionId]);
+
   return (
     <div className="relative flex h-screen w-screen text-[var(--t1)] font-sans overflow-hidden" style={{
       '--accent': settings.accent,
@@ -1061,10 +1227,15 @@ function App() {
         <header className="h-16 bg-[var(--panel)] border-b border-[var(--line)] flex items-center justify-between px-6 z-30 shrink-0 shadow-2xl">
             <div className="flex items-center gap-6">
                 {/* 左上角：导入音频（原「♪ BPM 测速助手」标题已按需求删除，导入按钮上移到这个位置） */}
-                <label className="flex items-center gap-2 px-4 py-2 bg-[var(--accent)] hover:bg-[var(--accent)] rounded-lg cursor-pointer transition text-sm font-black uppercase tracking-widest shadow-lg active:scale-95">
-                    <Upload size={18} />
-                    <span>{t('importAudio')}</span>
-                    <input type="file" accept="audio/*" onChange={handleFileUpload} className="hidden" />
+                <label
+                    className={`flex items-center gap-2 px-4 py-2 bg-[var(--accent)] rounded-lg transition text-sm font-black uppercase tracking-widest shadow-lg ${importing ? 'opacity-70 cursor-wait' : 'cursor-pointer active:scale-95'}`}
+                    title={importing ? t('decoding') : t('importAudio')}
+                >
+                    {importing
+                        ? <span className="inline-block w-[18px] h-[18px] rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                        : <Upload size={18} />}
+                    <span>{importing ? t('decoding') : t('importAudio')}</span>
+                    <input type="file" accept="audio/*" onChange={handleFileUpload} className="hidden" disabled={importing} />
                 </label>
                 {/* 紧邻导入音频：启动制谱侧栏（原来在设置面板里，按需求移到顶栏黄圈位置） */}
                 <button
@@ -1153,7 +1324,8 @@ function App() {
                                 return { zoom: newZoom, scrollLeft: Math.max(0, Math.min(newScrollLeft, maxScroll)) };
                             });
                         } else {
-                            // 普通滚轮：横向/纵向滚动
+                            // 普通滚轮：横向/纵向滚动（手动滚动视口 → 自动跟随暂时关闭）
+                            if (followRef.current) setFollowPlayhead(false);
                             setViewState(p => {
                                 const maxScroll = Math.max(0, audioData.duration * p.zoom - containerWidth);
                                 return {...p, scrollLeft: Math.max(0, Math.min(p.scrollLeft + e.deltaY + e.deltaX, maxScroll))};
@@ -1166,7 +1338,7 @@ function App() {
                             timingPoints={timingPoints} onUpdateBpm={(idx, bpm) => handleUpdatePoint(timingPoints.find(p => p.beatIndex === idx)?.id || '', 'bpm', bpm)}
                             onUpdateOffset={handleOffsetChange} onSeek={handleSeek}
                             onUpdateSectionTime={handleUpdatePointTime}
-                            onScrollChange={(sl) => setViewState(v => ({ ...v, scrollLeft: sl }))}
+                            onScrollChange={handleUserScroll}
                             onSectionClick={handleSectionClick}
                             width={containerWidth} height={containerHeight}
                             specLogBase={specLogBase}
@@ -1177,7 +1349,7 @@ function App() {
                             peakThreshold={settings.peakThreshold}
                             peakColor={settings.peakColor}
                             specInvert={settings.specInvert}
-                            renderDpr={(window.devicePixelRatio || 1) * settings.renderScale}
+                            renderDpr={renderDpr}
                             specFFTSize={settings.specFFTSize}
                             specSensitivity={settings.specSensitivity}
                             beatLineDelaySec={settings.beatLineDelayMs / 1000}
@@ -1317,11 +1489,41 @@ function App() {
                     {playbackRate.toFixed(2)}x
                 </button>
             </div>
-            <div className="flex items-center gap-6 bg-[var(--chip2)] px-5 py-1.5 rounded-2xl border border-[var(--line)]">
-                <button onClick={() => setViewState(s => ({...s, zoom: Math.max(MIN_ZOOM, s.zoom * 0.8)}))} className="text-[var(--t4)] hover:text-white transition-colors" title={t('zoomOut')}><ZoomOut size={22}/></button>
-                <span className="text-sm text-[var(--t3)] font-mono w-20 text-center font-bold" title={t('zoomScale')}>{Math.round(viewState.zoom)}px/s</span>
-                <button onClick={() => setViewState(s => ({...s, zoom: Math.min(MAX_ZOOM, s.zoom * 1.2)}))} className="text-[var(--t4)] hover:text-white transition-colors" title={t('zoomIn')}><ZoomIn size={22}/></button>
+            <div className="flex items-center gap-3 bg-[var(--chip2)] px-4 py-1.5 rounded-2xl border border-[var(--line)]">
+                <button onClick={() => zoomBy(0.8)} className="text-[var(--t4)] hover:text-white transition-colors" title={t('zoomOut')}><ZoomOut size={22}/></button>
+                {/* 缩放倍率：可直接键入 px/s，回车/失焦生效，↑↓ 以 1.2 倍步进，Esc 撤销 */}
+                <div className="flex items-baseline gap-0.5" title={`${t('zoomScale')}：${MIN_ZOOM}~${MAX_ZOOM} px/s（可直接输入，回车生效，↑↓ 微调）`}>
+                    <input
+                        value={zoomText}
+                        inputMode="decimal"
+                        onChange={(e) => setZoomText(e.target.value.replace(/[^\d.]/g, ''))}
+                        onFocus={(e) => { zoomFocusRef.current = true; e.currentTarget.select(); }}
+                        onBlur={() => { zoomFocusRef.current = false; applyZoomValue(parseFloat(zoomText)); }}
+                        onKeyDown={(e) => {
+                            e.stopPropagation();
+                            if (e.key === 'Enter') { e.preventDefault(); applyZoomValue(parseFloat(zoomText)); e.currentTarget.blur(); }
+                            else if (e.key === 'Escape') { e.preventDefault(); setZoomText(String(Math.round(viewState.zoom))); e.currentTarget.blur(); }
+                            else if (e.key === 'ArrowUp') { e.preventDefault(); applyZoomValue((parseFloat(zoomText) || viewState.zoom) * 1.2); }
+                            else if (e.key === 'ArrowDown') { e.preventDefault(); applyZoomValue((parseFloat(zoomText) || viewState.zoom) / 1.2); }
+                        }}
+                        className="w-14 text-center bg-transparent border-b border-transparent hover:border-[var(--line2)] focus:border-[var(--accent)] outline-none text-sm font-mono font-bold text-[var(--t1)] tabular-nums cursor-text"
+                    />
+                    <span className="text-[10px] text-[var(--t4)] font-mono select-none">px/s</span>
+                </div>
+                <button onClick={() => zoomBy(1.2)} className="text-[var(--t4)] hover:text-white transition-colors" title={t('zoomIn')}><ZoomIn size={22}/></button>
             </div>
+            {/* ★ v0.8.20 视口自动跟随播放头：白条滑出当前区域后自动跳到下一区域；手动拖动视口会自动关闭 */}
+            <button
+                onClick={() => setFollowPlayhead(f => !f)}
+                className={`p-2.5 rounded-xl border transition-all hover:scale-105 active:scale-95 ${
+                    followPlayhead
+                        ? 'bg-[var(--accent)]/15 border-[var(--accent)]/50 text-[var(--accent2)] shadow-[0_0_12px_rgba(79,70,229,0.25)]'
+                        : 'bg-[var(--chip2)] border-[var(--line)] text-[var(--t4)] hover:text-white'
+                }`}
+                title={`${t('followPlayhead')}${followPlayhead ? ' · ON' : ' · OFF'} — ${t('followPlayheadHint')}`}
+            >
+                <LocateFixed size={20} />
+            </button>
             </div>
         </footer>
       </div>
@@ -1472,22 +1674,7 @@ function App() {
                 </div>
             )}
 
-            {[...timingPoints].reverse().map((point, revIdx) => {
-                const originalIdx = timingPoints.length - 1 - revIdx;
-                return (
-                    <TimingRow 
-                        key={point.id} 
-                        point={point} 
-                        index={originalIdx} 
-                        totalCount={timingPoints.length}
-                        onUpdate={handleUpdatePoint} 
-                        onRemove={handleRemovePoint} 
-                        onUpdateTime={handleUpdatePointTime}
-                        onJumpToTime={handleJumpToTimeline}
-                        flash={flashSectionId === point.id}
-                    />
-                );
-            })}
+            {timingRows}
         </div>
 
         {/* 回到顶部悬浮球（变速段落区滚动时显示） */}

@@ -1,7 +1,7 @@
 {
   "name": "bpm-measurer-util",
   "private": true,
-  "version": "0.8.17",
+  "version": "0.8.18",
   "type": "module",
   "main": "boot.cjs",
   "scripts": {
@@ -36,7 +36,7 @@
     "asar": false,
     "directories": {
       "buildResources": "resources",
-      "output": "D:/tmp/新建文件夹/bpm app/BPM测速助手_v0.8.17"
+      "output": "D:/tmp/bpm app/BPM测速助手_v0.8.18"
     },
     "files": [
       "dist/**/*",
@@ -70,7 +70,17 @@
       "createStartMenuShortcut": true,
       "shortcutName": "BPM 测速助手",
       "multiLanguageInstaller": true,
-      "installerLanguages": ["zh_CN", "en_US", "ja_JP", "ko_KR", "fr_FR", "de_DE", "es_ES", "ru_RU", "pt_BR"]
+      "installerLanguages": [
+        "zh_CN",
+        "en_US",
+        "ja_JP",
+        "ko_KR",
+        "fr_FR",
+        "de_DE",
+        "es_ES",
+        "ru_RU",
+        "pt_BR"
+      ]
     },
     "linux": {
       "target": "AppImage"

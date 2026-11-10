@@ -145,13 +145,19 @@ export function loadSettings(): AppSettings {
     // v0.8.16 回退：删除自动跟随设置残留键（该功能有回归，已整体移除）
     delete (merged as any).followPlayhead;
     // 旧版本（无版本标记或版本过低）→ 强制套用新频谱默认（完整色阶 + 青绿波形），主题/语言保留
+    // v0.9.x：渲染分辨率锁定 1080p（位图宽恒 1920 设备像素）。
+    // 旧版本用户常为了对抗卡顿把 renderScale 调到 0.5（位图只有 ~960px 宽，糊得厉害），
+    // 渲染路径重写后不再需要这种妥协 → 一次性恢复到 1.0（正好 1080p）。
+    if ((parsed as any).__renderLock !== 1) {
+      merged.renderScale = DEFAULT_SETTINGS.renderScale;
+    }
     if (parsed.__v !== STORAGE_VERSION) {
       merged.specPalette = DEFAULT_SETTINGS.specPalette;
       merged.waveColor = DEFAULT_SETTINGS.waveColor;
       // v0.7.22：红线节拍线延迟新默认 30ms；旧默认值（0 = 从未校准过）自动升级为 30，
       // 已手动调过的值保持不变
       if (merged.beatLineDelayMs === 0) merged.beatLineDelayMs = DEFAULT_SETTINGS.beatLineDelayMs;
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...merged, __v: STORAGE_VERSION })); } catch { /* ignore */ }
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...merged, __v: STORAGE_VERSION, __renderLock: 1 })); } catch { /* ignore */ }
     }
     return merged;
   } catch {
@@ -162,7 +168,7 @@ export function loadSettings(): AppSettings {
 /** 保存设置到 localStorage（附带版本标记，避免迁移逻辑反复触发） */
 export function saveSettings(s: AppSettings): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...s, __v: STORAGE_VERSION }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...s, __v: STORAGE_VERSION, __renderLock: 1 }));
   } catch { /* 存储失败静默忽略 */ }
 }
 
@@ -433,6 +439,22 @@ function interpStops(stops: { t: number; rgb: [number, number, number] }[], f: n
   return stops[stops.length - 1].rgb;
 }
 
+/**
+ * 单色方案（只由 val 决定，与频率无关）。
+ * ★ 性能：原先这份表是写在 spectrogramColor 函数体内的字面量 —— 每调用一次就要
+ *   新建 5 个闭包。频谱绘制是「每像素一次调用」（全量一屏 ≈ 200 万像素），
+ *   等于每次重绘产生上千万个临时对象 → GC 抖动 → 主线程卡顿。
+ *   提到模块作用域后，闭包只生成一次，调用方直接复用。
+ */
+const SINGLE_PALETTES: Record<string, (v: number) => [number, number, number]> = {
+  // ===== 完整色阶（数据驱动，SCALES 查表；黑色噪声门限）=====
+  neon: (v) => { if (v < 0.5) { const t = v / 0.5; return [t * 90, 0, t * 160]; } const t = (v - 0.5) / 0.5; return [90 + t * 165, t * 60, 160 + t * 95]; },
+  heat: (v) => { if (v < 0.33) { const t = v / 0.33; return [t * 200, 0, 0]; } if (v < 0.66) { const t = (v - 0.33) / 0.33; return [200, t * 160, 0]; } const t = (v - 0.66) / 0.34; return [255, 160 + t * 95, t * 255]; },
+  gray: (v) => { const g = Math.round(v * 255); return [g, g, g]; },
+  psy:  (v) => { if (v < 0.5) { const t = v / 0.5; return [t * 80, 0, t * 130]; } const t = (v - 0.5) / 0.5; return [80 + t * 175, t * 40, 130 + t * 125]; },
+  au:   (v) => { if (v < 0.5) { const t = v / 0.5; return [t * 25, t * 140, 45 + t * 210]; } const t = (v - 0.5) / 0.5; return [25 + t * 230, 140 + t * 115, 255 - t * 70]; },
+};
+
 /** 频谱配色映射：val ∈ [0,1]（信号强度）+ freqNorm ∈ [0,1]（频率位置 0=低 1=高） → [r,g,b]
  *  - 单色方案：只由 val 决定
  *  - 多色分段方案：freqNorm 找到所在段（低/中/高），段间 RGB 插值；val 决定段色亮度（val=0→黑混合 92%，val=1→段色满色）
@@ -451,15 +473,8 @@ export function spectrogramColor(
   const f = Math.max(0, Math.min(1, freqNorm));
 
   // 单色方案（只由 val 决定，保持原曲线；色阶方案为多级渐变）
-  const single: Record<string, () => [number, number, number]> = {
-    // ===== 完整色阶（数据驱动，SCALES 查表；黑色噪声门限）=====
-    neon: () => { if (v < 0.5) { const t = v / 0.5; return [t * 90, 0, t * 160]; } const t = (v - 0.5) / 0.5; return [90 + t * 165, t * 60, 160 + t * 95]; },
-    heat: () => { if (v < 0.33) { const t = v / 0.33; return [t * 200, 0, 0]; } if (v < 0.66) { const t = (v - 0.33) / 0.33; return [200, t * 160, 0]; } const t = (v - 0.66) / 0.34; return [255, 160 + t * 95, t * 255]; },
-    gray: () => { const g = Math.round(v * 255); return [g, g, g]; },
-    psy:  () => { if (v < 0.5) { const t = v / 0.5; return [t * 80, 0, t * 130]; } const t = (v - 0.5) / 0.5; return [80 + t * 175, t * 40, 130 + t * 125]; },
-    au:   () => { if (v < 0.5) { const t = v / 0.5; return [t * 25, t * 140, 45 + t * 210]; } const t = (v - 0.5) / 0.5; return [25 + t * 230, 140 + t * 115, 255 - t * 70]; },
-  };
-  if (palette in single) return single[palette]();
+  const single = SINGLE_PALETTES;
+  if (palette in single) return single[palette](v);
 
   // 完整色阶方案：SCALES 多级渐变（val<0.06 噪声门限涂黑）
   if (palette in SCALES) {
@@ -485,7 +500,7 @@ export function spectrogramColor(
       { t: 1,    rgb: [255, 255, 255] },
     ];
   } else {
-    return single.au();
+    return single.au(v);
   }
 
   // 段间插值得 baseColor（按频率位置）
@@ -511,6 +526,45 @@ export function spectrogramColor(
     Math.round(pg * (1 - dark2)),
     Math.round(pb * (1 - dark2)),
   ];
+}
+
+// ============================================================================
+// 频谱色表（LUT）—— 低配机适配的核心优化
+// ============================================================================
+// 频谱是「每像素一次着色」的：一屏全量重绘在 2880×1800 / 200% 缩放的机器上
+// ≈ 2800×800 = 224 万像素。原先每像素都要走一遍 spectrogramColor：
+//   建对象 → hexToRgbArr 解析字符串 → interpStops 分配数组 → 3 次 Math.pow
+// 实测这类「与像素位置无关」的开销会占到整帧的绝大部分，而且制造巨量短命对象
+// （GC 一触发就掉帧）。这里把「强度 × 频率」两个维度预先算成一张色表：
+// 绘制时每像素只剩「查一次表」。
+
+/** 色表的频率维度档数（强度维度固定 256 档 = 一个字节） */
+export const SPECTRO_LUT_FREQ = 512;
+/** 色表下标移位：256 档强度需要左移 9 位（2^9 = 512 档频率） */
+export const SPECTRO_LUT_SHIFT = 9;
+
+/**
+ * 构建频谱色表：索引 = (强度档 << 9) | 频率档，值为 ImageData 里 Uint32 视图可直接写的打包色。
+ * 打包顺序按小端：低字节 R → 与 new Uint32Array(imageData.data.buffer) 的写入完全一致。
+ * 只在配色参数变化时重建一次（纯计算，与音频无关）。
+ */
+export function buildSpectrogramLUT(
+  palette: string,
+  custom?: [string, string, string],
+  peakThreshold = 0.8,
+  peakColor = '#ffffff'
+): Uint32Array {
+  const lut = new Uint32Array(256 * SPECTRO_LUT_FREQ);
+  const freqStep = 1 / (SPECTRO_LUT_FREQ - 1);
+  for (let q = 0; q < 256; q++) {
+    const val = q / 255;
+    const rowBase = q << SPECTRO_LUT_SHIFT;
+    for (let f = 0; f < SPECTRO_LUT_FREQ; f++) {
+      const [r, g, b] = spectrogramColor(val, f * freqStep, palette, custom, peakThreshold, peakColor);
+      lut[rowBase + f] = (255 << 24) | (b << 16) | (g << 8) | r;
+    }
+  }
+  return lut;
 }
 
 /** 随机配色：生成一组协调的主色 + 强调色（HSB 随机 + 类似色） */export function randomAccentPair(): { accent: string; accent2: string } {

@@ -8,6 +8,7 @@ const zh: Dict = {
   // header
   appTitle: 'BPM 测速助手',
   importAudio: '导入音频',
+  decoding: '解码中…',
   mapHelper: '制谱侧栏',
   launching: '启动中…',
   help: '使用说明',
@@ -66,6 +67,8 @@ const zh: Dict = {
   zoomOut: '缩小',
   zoomScale: '缩放比例',
   zoomIn: '放大',
+  followPlayhead: '跟随播放',
+  followPlayheadHint: '播放头滑出当前区域后自动跳到下一区域（手动拖动或滚动视口会自动关闭）',
   overviewTitle: '整曲总览：点击或拖拽跳转；青色区域为当前视图范围',
   vizTitle: '点击跳转 / 按住拖动平移时间轴',
   // 提示信息
@@ -181,6 +184,7 @@ const en: Dict = {
   // header
   appTitle: 'BPM Measurer',
   importAudio: 'Import Audio',
+  decoding: 'Decoding…',
   mapHelper: 'Map Helper',
   launching: 'Launching…',
   help: 'Help',
@@ -239,6 +243,8 @@ const en: Dict = {
   zoomOut: 'Zoom out',
   zoomScale: 'Zoom',
   zoomIn: 'Zoom in',
+  followPlayhead: 'Follow playhead',
+  followPlayheadHint: 'Auto-jump to the next region when the playhead leaves the view; turns off when you pan or scroll the view manually',
   overviewTitle: 'Overview: click or drag to seek; cyan area = current view',
   vizTitle: 'Click to seek / drag to pan',
   // alerts
@@ -351,7 +357,7 @@ const en: Dict = {
 };
 
 const ja: Dict = {
-  appTitle: 'BPM テンポ測定', importAudio: '音声を読み込む', mapHelper: '譜面ヘルパー', launching: '起動中…', help: 'ヘルプ', settings: '設定',
+  appTitle: 'BPM テンポ測定', importAudio: '音声を読み込む', decoding: 'デコード中…', mapHelper: '譜面ヘルパー', launching: '起動中…', help: 'ヘルプ', settings: '設定',
   getStarted: 'はじめに', step1Title: '1. 音声を読み込む',
   step1Desc: '標準的な音声形式に対応。波形とスペクトログラムを自動抽出します。',
   step2Title: '2. 開始点を調整', step2Desc: '最下部の赤いマーカーをドラッグして最初の拍に合わせます（Offset）。',
@@ -378,7 +384,7 @@ const ja: Dict = {
   svHint: '緑線 SV = 最初のセクション BPM ÷ 現在のセクション BPM（generate_timing.py 準拠）。',
   specLogBase: 'スペクトル対数スケール', stop: '停止', metronome: 'メトロノーム',
   rateTitle: '再生速度（0.25x - 2.0x）音程も変化。低速でアクセントを確認。',
-  rateReset: 'クリックで 1.00x に戻す', zoomOut: '縮小', zoomScale: 'ズーム', zoomIn: '拡大',
+  rateReset: 'クリックで 1.00x に戻す', zoomOut: '縮小', zoomScale: 'ズーム', zoomIn: '拡大', followPlayhead: '再生位置に追従', followPlayheadHint: '再生ヘッドが表示範囲を外れたら次の領域へ自動ジャンプ（手動でスクロールすると解除）',
   overviewTitle: '全体表示：クリック/ドラッグで移動、シアン=現在の表示範囲',
   vizTitle: 'クリックでジャンプ / ドラッグでスクロール',
   needAudio: '先に音声を読み込み、タイミングポイントを設定してください。',
@@ -451,7 +457,7 @@ done: '完了',
 };
 
 const ko: Dict = {
-  appTitle: 'BPM 측정기', importAudio: '오디오 가져오기', mapHelper: '채보 도우미', launching: '실행 중…', help: '도움말', settings: '설정',
+  appTitle: 'BPM 측정기', importAudio: '오디오 가져오기', decoding: '디코딩 중…', mapHelper: '채보 도우미', launching: '실행 중…', help: '도움말', settings: '설정',
   getStarted: '시작하기', step1Title: '1. 오디오 가져오기',
   step1Desc: '대부분의 표준 오디오 형식을 지원합니다. 파형과 스펙트로그램을 자동 추출합니다.',
   step2Title: '2. 시작점 조정', step2Desc: '맨 아래 빨간 마커를 끌어 첫 박자에 맞춥니다 (Offset).',
@@ -478,7 +484,7 @@ const ko: Dict = {
   svHint: '녹색선 SV = 첫 구간 BPM ÷ 현재 구간 BPM (generate_timing.py 준수).',
   specLogBase: '스펙트럼 로그 스케일', stop: '정지', metronome: '메트로놈',
   rateTitle: '재생 속도 (0.25x - 2.0x) 음높이도 변화. 느리게 듣고 강세 확인.',
-  rateReset: '클릭하여 1.00x로 복귀', zoomOut: '축소', zoomScale: '배율', zoomIn: '확대',
+  rateReset: '클릭하여 1.00x로 복귀', zoomOut: '축소', zoomScale: '배율', zoomIn: '확대', followPlayhead: '재생 위치 따라가기', followPlayheadHint: '재생 헤드가 화면을 벗어나면 다음 영역으로 자동 이동 (수동 스크롤 시 해제)',
   overviewTitle: '전체 보기: 클릭/드래그로 이동, 청록 = 현재 표시 범위',
   vizTitle: '클릭하여 이동 / 드래그하여 스크롤',
   needAudio: '먼저 오디오를 가져오고 타이밍 포인트를 설정하세요.',
@@ -551,7 +557,7 @@ done: '완료',
 };
 
 const fr: Dict = {
-  appTitle: 'Mesureur BPM', importAudio: 'Importer l\'audio', mapHelper: 'Assistant de map', launching: 'Lancement…', help: 'Aide', settings: 'Paramètres',
+  appTitle: 'Mesureur BPM', importAudio: 'Importer l\'audio', decoding: 'Décodage…', mapHelper: 'Assistant de map', launching: 'Lancement…', help: 'Aide', settings: 'Paramètres',
   getStarted: 'Commencer', step1Title: '1. Importer l\'audio',
   step1Desc: 'Supporte la plupart des formats audio standard. Forme d\'onde et spectrogramme extraits automatiquement.',
   step2Title: '2. Régler le décalage', step2Desc: 'Faites glisser le marqueur rouge pour aligner le premier temps (Offset).',
@@ -578,7 +584,7 @@ const fr: Dict = {
   svHint: 'SV ligne verte = BPM première section ÷ BPM section actuelle (conforme generate_timing.py).',
   specLogBase: 'Échelle log du spectrogramme', stop: 'Arrêter', metronome: 'Métronome',
   rateTitle: 'Vitesse (0.25x - 2.0x) ; le pitch change. Ralentissez pour entendre les accents.',
-  rateReset: 'Cliquez pour remettre 1.00x', zoomOut: 'Zoom arrière', zoomScale: 'Zoom', zoomIn: 'Zoom avant',
+  rateReset: 'Cliquez pour remettre 1.00x', zoomOut: 'Zoom arrière', zoomScale: 'Zoom', zoomIn: 'Zoom avant', followPlayhead: 'Suivre la tête de lecture', followPlayheadHint: 'Saut automatique vers la zone suivante quand la tête sort de la vue (désactivé si vous faites défiler manuellement)',
   overviewTitle: 'Aperçu : cliquez/glissez pour chercher ; cyan = vue actuelle',
   vizTitle: 'Cliquez pour chercher / glissez pour défiler',
   needAudio: 'Veuillez d\'abord importer l\'audio et régler les points de timing.',
@@ -645,7 +651,7 @@ done: 'Terminé',
 };
 
 const de: Dict = {
-  appTitle: 'BPM-Messgerät', importAudio: 'Audio importieren', mapHelper: 'Map-Helfer', launching: 'Wird gestartet…', help: 'Hilfe', settings: 'Einstellungen',
+  appTitle: 'BPM-Messgerät', importAudio: 'Audio importieren', decoding: 'Dekodiere…', mapHelper: 'Map-Helfer', launching: 'Wird gestartet…', help: 'Hilfe', settings: 'Einstellungen',
   getStarted: 'Loslegen', step1Title: '1. Audio importieren',
   step1Desc: 'Unterstützt die meisten Standard-Audioformate. Wellenform & Spektrogramm werden automatisch extrahiert.',
   step2Title: '2. Offset einstellen', step2Desc: 'Roten Marker auf den ersten Schlag ziehen (Offset).',
@@ -672,7 +678,7 @@ const de: Dict = {
   svHint: 'Grüne Linie SV = BPM erste Sektion ÷ BPM aktuelle Sektion (konform zu generate_timing.py).',
   specLogBase: 'Log-Skala Spektrogramm', stop: 'Stopp', metronome: 'Metronom',
   rateTitle: 'Wiedergabegeschwindigkeit (0.25x - 2.0x); Tonhöhe ändert sich. Langsam hören für Akzente.',
-  rateReset: 'Klicken zum Zurücksetzen auf 1.00x', zoomOut: 'Verkleinern', zoomScale: 'Zoom', zoomIn: 'Vergrößern',
+  rateReset: 'Klicken zum Zurücksetzen auf 1.00x', zoomOut: 'Verkleinern', zoomScale: 'Zoom', zoomIn: 'Vergrößern', followPlayhead: 'Abspielkopf folgen', followPlayheadHint: 'Automatisch zum nächsten Bereich springen, wenn der Abspielkopf die Ansicht verlässt (bei manuellem Scrollen deaktiviert)',
   overviewTitle: 'Übersicht: klicken/ziehen zum Springen; Cyan = aktuelle Ansicht',
   vizTitle: 'Klicken zum Springen / Ziehen zum Verschieben',
   needAudio: 'Bitte zuerst Audio importieren und Timing-Punkte setzen.',
@@ -740,7 +746,7 @@ done: 'Fertig',
 };
 
 const es: Dict = {
-  appTitle: 'Medidor de BPM', importAudio: 'Importar audio', mapHelper: 'Asistente de map', launching: 'Iniciando…', help: 'Ayuda', settings: 'Ajustes',
+  appTitle: 'Medidor de BPM', importAudio: 'Importar audio', decoding: 'Decodificando…', mapHelper: 'Asistente de map', launching: 'Iniciando…', help: 'Ayuda', settings: 'Ajustes',
   getStarted: 'Empezar', step1Title: '1. Importar audio',
   step1Desc: 'Compatible con la mayoría de formatos de audio estándar. Forma de onda y espectrograma extraídos automáticamente.',
   step2Title: '2. Ajustar offset', step2Desc: 'Arrastra el marcador rojo para alinear el primer pulso (Offset).',
@@ -767,7 +773,7 @@ const es: Dict = {
   svHint: 'SV línea verde = BPM primera sección ÷ BPM sección actual (conforme a generate_timing.py).',
   specLogBase: 'Escala log del espectrograma', stop: 'Detener', metronome: 'Metrónomo',
   rateTitle: 'Velocidad (0.25x - 2.0x); el tono cambia. Reduce para oír los acentos.',
-  rateReset: 'Clic para restablecer 1.00x', zoomOut: 'Alejar', zoomScale: 'Zoom', zoomIn: 'Acercar',
+  rateReset: 'Clic para restablecer 1.00x', zoomOut: 'Alejar', zoomScale: 'Zoom', zoomIn: 'Acercar', followPlayhead: 'Seguir el cursor de reproducción', followPlayheadHint: 'Salto automático a la siguiente zona cuando el cursor sale de la vista (se desactiva al desplazar manualmente)',
   overviewTitle: 'Vista general: clic/arrastre para buscar; cian = vista actual',
   vizTitle: 'Clic para buscar / arrastra para desplazar',
   needAudio: 'Importa el audio y configura los puntos de tempo primero.',
@@ -835,7 +841,7 @@ done: 'Hecho',
 };
 
 const ru: Dict = {
-  appTitle: 'Измеритель BPM', importAudio: 'Импорт аудио', mapHelper: 'Помощник маппинга', launching: 'Запуск…', help: 'Справка', settings: 'Настройки',
+  appTitle: 'Измеритель BPM', importAudio: 'Импорт аудио', decoding: 'Декодирование…', mapHelper: 'Помощник маппинга', launching: 'Запуск…', help: 'Справка', settings: 'Настройки',
   getStarted: 'Начало работы', step1Title: '1. Импорт аудио',
   step1Desc: 'Поддерживаются большинство стандартных аудиоформатов. Форма волны и спектрограмма извлекаются автоматически.',
   step2Title: '2. Настройка смещения', step2Desc: 'Перетащите красный маркер на первую долю (Offset).',
@@ -862,7 +868,7 @@ const ru: Dict = {
   svHint: 'SV зелёной линии = BPM первой секции ÷ BPM текущей секции (как в generate_timing.py).',
   specLogBase: 'Лог-шкала спектрограммы', stop: 'Стоп', metronome: 'Метроном',
   rateTitle: 'Скорость (0.25x - 2.0x); высота тона меняется. Замедлите для прослушивания акцентов.',
-  rateReset: 'Клик для сброса 1.00x', zoomOut: 'Отдалить', zoomScale: 'Масштаб', zoomIn: 'Приблизить',
+  rateReset: 'Клик для сброса 1.00x', zoomOut: 'Отдалить', zoomScale: 'Масштаб', zoomIn: 'Приблизить', followPlayhead: 'Следовать за курсором', followPlayheadHint: 'Автопереход к следующей области, когда курсор выходит за пределы экрана (отключается при ручной прокрутке)',
   overviewTitle: 'Обзор: клик/перетаскивание для перехода; голубой = текущий вид',
   vizTitle: 'Клик для перехода / перетаскивание для прокрутки',
   needAudio: 'Сначала импортируйте аудио и задайте точки тайминга.',
@@ -930,7 +936,7 @@ done: 'Готово',
 };
 
 const pt: Dict = {
-  appTitle: 'Medidor de BPM', importAudio: 'Importar áudio', mapHelper: 'Assistente de map', launching: 'Iniciando…', help: 'Ajuda', settings: 'Configurações',
+  appTitle: 'Medidor de BPM', importAudio: 'Importar áudio', decoding: 'Decodificando…', mapHelper: 'Assistente de map', launching: 'Iniciando…', help: 'Ajuda', settings: 'Configurações',
   getStarted: 'Começar', step1Title: '1. Importar áudio',
   step1Desc: 'Suporta a maioria dos formatos de áudio padrão. Forma de onda e espectrograma extraídos automaticamente.',
   step2Title: '2. Ajustar offset', step2Desc: 'Arraste o marcador vermelho para alinhar o primeiro tempo (Offset).',
@@ -957,7 +963,7 @@ const pt: Dict = {
   svHint: 'SV linha verde = BPM primeira seção ÷ BPM seção atual (conforme generate_timing.py).',
   specLogBase: 'Escala log do espectrograma', stop: 'Parar', metronome: 'Metrônomo',
   rateTitle: 'Velocidade (0.25x - 2.0x); o tom muda. Diminua para ouvir os acentos.',
-  rateReset: 'Clique para redefinir 1.00x', zoomOut: 'Reduzir', zoomScale: 'Zoom', zoomIn: 'Ampliar',
+  rateReset: 'Clique para redefinir 1.00x', zoomOut: 'Reduzir', zoomScale: 'Zoom', zoomIn: 'Ampliar', followPlayhead: 'Seguir cursor de reprodução', followPlayheadHint: 'Salto automático para a próxima área quando o cursor sai da vista (desativado ao rolar manualmente)',
   overviewTitle: 'Visão geral: clique/arraste para buscar; ciano = vista atual',
   vizTitle: 'Clique para buscar / arraste para rolar',
   needAudio: 'Importe o áudio e configure os pontos de tempo primeiro.',
