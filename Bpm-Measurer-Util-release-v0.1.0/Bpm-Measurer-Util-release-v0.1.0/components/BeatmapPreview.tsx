@@ -360,6 +360,8 @@ const BeatmapPreview: React.FC<Props> = ({
     stream: MediaStream; startedAt: number; mime: string; ext: string;
     /** 这次录制的目标帧率：渲染循环按它保底，避免录 60fps 却只画 30 帧 */
     fps: number;
+    /** 是否在「曲尾」自动停止：仅「完整录制」为 true；普通录制手动停止（想录多久录多久） */
+    autoStop: boolean;
   } | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   /** 组件已卸载：卸载时停掉的录制不要再弹「另存为」（用户只是关了预览） */
@@ -989,6 +991,37 @@ const BeatmapPreview: React.FC<Props> = ({
   const getFrameRef = useRef(getFrame);
   getFrameRef.current = getFrame;
 
+  /**
+   * 把「画布下方的数据条」画进录制画面。
+   * captureStream 只录画布，而数据条是 HTML 元素（不进录像），所以录屏时手动画上，
+   * 文字格式与 flushHud 一致、颜色沿用预览配色。hud 是 hudRef.current 的最新值（本帧刚算好）。
+   */
+  const drawRecHud = (ctx: CanvasRenderingContext2D, w: number, h: number, hud: typeof hudRef.current) => {
+    const line1 = `${hud.t.toFixed(2)}s   ${hud.keys}K · ${Math.round(hud.bpm)} BPM · 基准 ${Math.round(hud.base)}`;
+    const line2 = `SV ${hud.sv.toFixed(2)}x · 流速 ${Math.round(hud.speed * 100)}% · 可视 ${osuSpeedLabel(hud.scrollSpeed, hud.speed, hud.hitPos)}`;
+    const combo = hud.combo > 0 ? `${hud.combo}x` : '';
+    // 底部留一条与数据条同色的分隔线 + 深色底，和预览界面观感一致
+    const barH = 30;
+    const barY = h - barH;
+    ctx.fillStyle = C.panel;
+    ctx.fillRect(0, barY, w, barH);
+    ctx.strokeStyle = C.line;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, barY + 0.5); ctx.lineTo(w, barY + 0.5); ctx.stroke();
+    ctx.font = '10px monospace';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = C.text;
+    ctx.fillText(line1, 8, barY + 12);
+    ctx.fillStyle = C.green;
+    ctx.fillText(line2, 8, barY + 24);
+    if (combo) {
+      ctx.fillStyle = C.text;
+      ctx.fillText(combo, w - 8 - ctx.measureText(combo).width, barY + 12);
+      ctx.fillStyle = C.dim;
+      ctx.fillText('100.00%', w - 8 - ctx.measureText('100.00%').width, barY + 24);
+    }
+  };
+
   // ---- 渲染循环：帧率由设置决定（垂直同步 / 指定挡位 / 无限制） ----
   useEffect(() => {
     let stopped = false;
@@ -1052,10 +1085,17 @@ const BeatmapPreview: React.FC<Props> = ({
         rec.ctx.setTransform(1, 0, 0, 1, 0, 0);
         const rfc = getFrameRef.current(rec.w, rec.h, 1, cfg.rs, cfg.skin, cfg.doc.keyCount);
         drawFrameRef.current(rec.ctx, rfc, tSec);
-        // 录到曲尾自动停：优先用**音频**时长（谱面 durationMs 只到「最后音符 + 2s」，
-        // 照它停会把音乐尾巴切掉）；拿不到音频信息才退回谱面时长。
+        // 把画布下方的数据条（时间 / BPM / SV / 流速 / 连击）也画进录制画面：
+        // 数据条是 HTML 元素、不进 captureStream，录屏时它本来不会出现，这里手动画上。
+        drawRecHud(rec.ctx, rec.w, rec.h, hudRef.current);
+        // 停止时机：
+        //   - 普通录制（autoStop=false）→ 手动停止，不因播到曲尾自动停，想录多久录多久；
+        //   - 完整录制（autoStop=true）→ 录到曲尾自动停（优先用**音频**时长，谱面 durationMs
+        //     只到「最后音符 + 2s」，照它停会把音乐尾巴切掉）。
         const endMs = audioMs && audioMs > 1000 ? audioMs : cfg.doc.durationMs;
-        if (tSec * 1000 >= endMs || now - rec.startedAt > REC_MAX_MS) stopRecordingRef.current('end');
+        if (rec.autoStop && tSec * 1000 >= endMs) stopRecordingRef.current('end');
+        // 安全兜底：无论哪种录制，超过上限都强制停，避免一直挂着录满内存。
+        if (now - rec.startedAt > REC_MAX_MS) stopRecordingRef.current('end');
       }
 
       flushHud(now);
@@ -1265,6 +1305,7 @@ const BeatmapPreview: React.FC<Props> = ({
       const c = cfgRef.current;
       const fc0 = getFrameRef.current(w, h, 1, c.rs, c.skin, c.doc.keyCount);
       drawFrameRef.current(rctx, fc0, startT);
+      drawRecHud(rctx, w, h, hudRef.current); // 首帧也带上数据条，避免录像开头闪一下没 HUD
     } catch { /* 首帧失败不致命 */ }
 
     // ---- 音轨：主窗口的录制混音总线 → MediaStreamDestination ----
@@ -1334,7 +1375,7 @@ const BeatmapPreview: React.FC<Props> = ({
     };
 
     try { recorder.start(1000); } catch { setStatus('录制启动失败'); return; }
-    recRef.current = { recorder, ctx: rctx, w, h, stream, startedAt: performance.now(), mime, ext, fps: recFpsVal };
+    recRef.current = { recorder, ctx: rctx, w, h, stream, startedAt: performance.now(), mime, ext, fps: recFpsVal, autoStop: fromHead };
     setRecording(true);
     onRecChangeRef.current?.(true); // 录制期间关掉频谱的「跟随播放头」
 
