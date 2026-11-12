@@ -1,17 +1,20 @@
 {
   "name": "bpm-measurer-util",
   "private": true,
-  "version": "0.8.18",
+  "version": "0.9.0",
+  "description": "BPM 测速助手 · 外部谱面红/绿线编辑与变速实时预览",
+  "author": "kkkhover",
   "type": "module",
   "main": "boot.cjs",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -p tsconfig.electron.json && tsc -p tsconfig.preload.json && vite build",
-    "preview": "vite preview",
+    "build": "node node_modules/typescript/bin/tsc -p tsconfig.electron.json && node node_modules/typescript/bin/tsc -p tsconfig.preload.json && node node_modules/vite/bin/vite.js build",
+    "preview": "node node_modules/vite/bin/vite.js preview",
     "sync:maphelper": "node scripts/sync-maphelper.mjs",
+    "verify:beatmap": "node scripts/verify-beatmap.cjs",
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:3000 && electron .\"",
-    "electron:build": "npm run sync:maphelper && npm run build && electron-builder",
-    "electron:release": "npm run sync:maphelper && npm run build && electron-builder -p always"
+    "electron:build": "npm run sync:maphelper && npm run build && node node_modules/electron-builder/cli.js --win",
+    "electron:release": "npm run sync:maphelper && npm run build && node node_modules/electron-builder/cli.js --win -p always"
   },
   "devDependencies": {
     "@electron/fuses": "^2.1.3",
@@ -36,7 +39,7 @@
     "asar": false,
     "directories": {
       "buildResources": "resources",
-      "output": "D:/tmp/bpm app/BPM测速助手_v0.8.18"
+      "output": "D:/tmp/bpm app/BPM测速助手_v0.9.0"
     },
     "files": [
       "dist/**/*",

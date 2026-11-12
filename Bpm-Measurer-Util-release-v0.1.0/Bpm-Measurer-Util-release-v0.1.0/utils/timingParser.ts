@@ -10,10 +10,13 @@
 //                     txt 时间单位按整份文件判定；osu 首条红线不再重复；开头绿线（SV）不再丢失。
 // 返回软件配置（globalOffset + rawPoints），解析失败返回 null。
 
+import type { LineType } from '../types';
+
 export interface ParsedTimingConfig {
   offset: number;          // 秒
   // timeSec：红线绝对时间（秒，v0.7.18 起的权威位置值）；缺省则由 beatIndex + 上一段 BPM 推算
-  points: { beatIndex: number; bpm: number; meter?: number; sv?: boolean; svRate?: number; timeSec?: number }[];
+  // v0.9.0：增加 lineType；svRate 默认 1（正常流速），不再使用「0 = 自动补偿」
+  points: { beatIndex: number; bpm: number; meter?: number; sv?: boolean; svRate?: number; timeSec?: number; lineType?: LineType }[];
 }
 
 /** 文本规范化（读取优化）：去掉 UTF-8 BOM + 统一换行为 \n（兼容 CRLF / CR / 尾随空白） */
@@ -77,7 +80,9 @@ function parseJsonConfig(content: string): ParsedTimingConfig | null {
         beatIndex: Math.max(0, p.beatIndex),
         bpm: Math.round(p.bpm * 100) / 100,
         sv: p.sv !== false,
-        svRate: p.svRate && p.svRate > 0 ? p.svRate : 0,
+        svRate: p.svRate && p.svRate > 0 ? p.svRate : 1,
+        lineType: p.lineType === 'red' || p.lineType === 'green' || p.lineType === 'both'
+          ? p.lineType : (p.sv === false ? 'red' : 'both'),
         // 红线绝对时间（v0.7.18）：保留它才能让红线位置独立（改 BPM 不挪动）
         timeSec: typeof p.timeSec === 'number' && isFinite(p.timeSec) ? p.timeSec : undefined,
       }));
@@ -191,7 +196,7 @@ function parseMalody(content: string): ParsedTimingConfig | null {
         beatIndex: toBeatIndex(p.beat),
         bpm: Math.round(p.bpm * 100) / 100,
         sv: true,
-        svRate: 0,
+        svRate: 1,
       }));
     if (points.length === 0) return null;
     // 首点归一化到 0
@@ -237,13 +242,13 @@ function parseArcaea(content: string): ParsedTimingConfig | null {
   const offsetSec = msToSec(reds[0].offsetMs);
   // timeSec：保留每条红线的绝对时间 → 位置精确、导出可还原
   const points: { beatIndex: number; bpm: number; sv: boolean; svRate: number; timeSec: number }[] = [
-    { beatIndex: 0, bpm: reds[0].bpm, sv: true, svRate: 0, timeSec: msToSec(reds[0].offsetMs) },
+    { beatIndex: 0, bpm: reds[0].bpm, sv: true, svRate: 1, timeSec: msToSec(reds[0].offsetMs) },
   ];
   let last = reds[0], lastIndex = 0;
   for (let i = 1; i < reds.length; i++) {
     const secPerBeat = 60 / last.bpm;
     lastIndex += (reds[i].offsetMs - last.offsetMs) / 1000 / secPerBeat;
-    points.push({ beatIndex: lastIndex, bpm: reds[i].bpm, sv: true, svRate: 0, timeSec: msToSec(reds[i].offsetMs) });
+    points.push({ beatIndex: lastIndex, bpm: reds[i].bpm, sv: true, svRate: 1, timeSec: msToSec(reds[i].offsetMs) });
     last = reds[i];
   }
   return { offset: offsetSec, points };
@@ -265,7 +270,7 @@ function parseGameJson(content: string): ParsedTimingConfig | null {
       beatIndex: typeof b.startBeat === 'number' ? b.startBeat : i * 4,
       bpm: Math.round(b.bpm * 100) / 100,
       sv: true,
-      svRate: 0,
+      svRate: 1,
       // BPMList 自带 startTimeSec（秒，绝对时间）→ 用它保证红线位置精确
       timeSec: typeof b.startTimeSec === 'number' && isFinite(b.startTimeSec) ? Math.round(b.startTimeSec * 1e6) / 1e6 : undefined,
     }));
@@ -276,7 +281,7 @@ function parseGameJson(content: string): ParsedTimingConfig | null {
   if (cfg.settings && Array.isArray(cfg.actions) && typeof cfg.settings.bpm === 'number') {
     const offsetSec = typeof cfg.settings.offset === 'number' ? msToSec(cfg.settings.offset) : 0;
     const points: { beatIndex: number; bpm: number; sv: boolean; svRate: number }[] = [
-      { beatIndex: 0, bpm: Math.round(cfg.settings.bpm * 100) / 100, sv: true, svRate: 0 },
+      { beatIndex: 0, bpm: Math.round(cfg.settings.bpm * 100) / 100, sv: true, svRate: 1 },
     ];
     for (const a of cfg.actions) {
       if (a?.eventType === 'SetSpeed' && a.speedType === 'Bpm' && typeof a.beatsPerMinute === 'number') {
@@ -284,7 +289,7 @@ function parseGameJson(content: string): ParsedTimingConfig | null {
           beatIndex: typeof a.floor === 'number' ? a.floor : points[points.length - 1].beatIndex + 1,
           bpm: Math.round(a.beatsPerMinute * 100) / 100,
           sv: true,
-          svRate: 0,
+          svRate: 1,
         });
       }
     }
@@ -300,7 +305,7 @@ function parseGameJson(content: string): ParsedTimingConfig | null {
       beatIndex: typeof p.beat === 'number' ? p.beat : i * 4,
       bpm: Math.round(p.bpm * 100) / 100,
       sv: true,
-      svRate: 0,
+      svRate: 1,
     }));
     // events 里的 speed 值 = 绿线倍速 → 回填到同拍的红线
     if (Array.isArray(cfg.events)) {
@@ -346,13 +351,13 @@ function parseTxt(content: string): ParsedTimingConfig | null {
   rows.sort((a, b) => a.timeMs - b.timeMs);
   const offsetSec = msToSec(rows[0].timeMs);
   const points: { beatIndex: number; bpm: number; sv: boolean; svRate: number; timeSec: number }[] = [
-    { beatIndex: 0, bpm: rows[0].bpm, sv: true, svRate: 0, timeSec: offsetSec },
+    { beatIndex: 0, bpm: rows[0].bpm, sv: true, svRate: 1, timeSec: offsetSec },
   ];
   let last = rows[0], lastIndex = 0;
   for (let i = 1; i < rows.length; i++) {
     const secPerBeat = 60 / last.bpm;
     lastIndex += (rows[i].timeMs - last.timeMs) / 1000 / secPerBeat;
-    points.push({ beatIndex: lastIndex, bpm: rows[i].bpm, sv: true, svRate: 0, timeSec: msToSec(rows[i].timeMs) });
+    points.push({ beatIndex: lastIndex, bpm: rows[i].bpm, sv: true, svRate: 1, timeSec: msToSec(rows[i].timeMs) });
     last = rows[i];
   }
   return { offset: offsetSec, points };

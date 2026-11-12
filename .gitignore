@@ -1,7 +1,5 @@
-# 依赖
+# 依赖与构建产物
 node_modules/
-
-# 构建产物
 dist/
 dist-electron/
 dist-ssr/
@@ -9,21 +7,17 @@ release/
 *.tsbuildinfo
 
 # 打包产物
-BPM测速助手_v*/
 win-unpacked/
+BPM测速助手_v*/
 *.exe
 *.blockmap
 *.dmg
 *.AppImage
 builder-debug.yml
 
-# 运行期数据 / 日志 / 缓存
+# 日志与缓存
 logs/
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
 .cache/
 backups/
 _smoke-data/
@@ -33,25 +27,12 @@ maphelper/
 
 # 不入库文档
 更新日志.md
-v0.*-*.md
 docs/reports/
 
-# 工作区临时文件
+# 临时文件与备份
 _*/
-.tmp/
-_*.mjs
-_*.js
-_*.txt
-_*.wav
-_*.png
-orig_src/
+.tmp*/
 *.zip
-verify_detune.mjs
-generate_timing.py
-样例-实机导出的malody谱面.mc
-
-# 测试产物 / Python 缓存
-**/tests/shots/
 __pycache__/
 *.pyc
 
@@ -71,7 +52,7 @@ osu-maphelper_v0.8.10/
 osu-maphelper_v0.8.12/
 osu-maphelper_v0.8.16/
 
-# 编辑器 / 系统
+# 编辑器与系统
 .vscode/*
 !.vscode/extensions.json
 .idea/

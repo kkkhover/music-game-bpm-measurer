@@ -29,7 +29,9 @@
     "src/**/*.tsx",
     "App.tsx",
     "index.tsx",
-    "types.ts"
+    "preview.tsx",
+    "types.ts",
+    "types/**/*.d.ts"
   ],
   "exclude": ["node_modules", "dist", "dist-electron", "src/electron.d.ts"]
 }

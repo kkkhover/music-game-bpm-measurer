@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react';
-import { AppSettings, DEFAULT_SETTINGS, THEME_PRESETS, SWATCH_COLORS, SPEC_PALETTES, SPEC_PREVIEW, LANGUAGES, METRONOME_SOUNDS, MetronomeCategory, SpecCategory, ThemePreset, randomAccentPair } from '../utils/settings';
+import { AppSettings, DEFAULT_SETTINGS, THEME_PRESETS, SWATCH_COLORS, SPEC_PALETTES, SPEC_PREVIEW, LANGUAGES, METRONOME_SOUNDS, MetronomeCategory, SpecCategory, ThemePreset, randomAccentPair, PREVIEW_FPS_OPTIONS, REC_HEIGHT_OPTIONS, REC_FPS_OPTIONS, REC_KBPS_OPTIONS, recSizePerMinute } from '../utils/settings';
 import { t } from '../utils/i18n';
-import { X, RefreshCw, Shuffle, FlipVertical2, ArrowLeft } from 'lucide-react';
+import { X, RefreshCw, Shuffle, FlipVertical2, ArrowLeft, MonitorPlay } from 'lucide-react';
 
 interface SettingsModalProps {
   settings: AppSettings;
@@ -328,6 +328,98 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onChange, onRes
                 title={t('specSensitivityHint')}
               />
             </div>
+          </section>
+
+          {/* ===== 谱面预览帧率：垂直同步开关 + 各挡位 / 无限制 ===== */}
+          <section className="pt-5 border-t border-[var(--line)]">
+            <h4 className="text-sm font-black text-[var(--t2)] uppercase tracking-widest mb-3 flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-sky-500" /> {t('previewFpsSection')}
+            </h4>
+            <button
+              onClick={() => onChange({ ...settings, previewVsync: !settings.previewVsync })}
+              className={`w-full px-3 py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ${settings.previewVsync ? 'bg-[var(--accent)] text-white' : 'bg-[var(--chip2)] text-[var(--t3)] hover:bg-[var(--chip)]'}`}
+              title={t('previewVsyncHint')}
+            >
+              <MonitorPlay size={14} />
+              {settings.previewVsync ? t('previewVsyncOn') : t('previewVsyncOff')}
+            </button>
+            <div className="flex justify-between items-center mt-3 mb-1.5">
+              <span className="text-[10px] text-[var(--t3)] uppercase font-bold tracking-widest">{t('previewFpsLimit')}</span>
+              <span className="text-xs font-mono text-[var(--accent)] font-bold">
+                {settings.previewVsync ? 'V-Sync' : settings.previewFpsLimit === 0 ? t('previewFpsUnlimited') : `${settings.previewFpsLimit} fps`}
+              </span>
+            </div>
+            <div className={`grid grid-cols-4 gap-2 ${settings.previewVsync ? 'opacity-45' : ''}`}>
+              {PREVIEW_FPS_OPTIONS.map((o) => (
+                <button
+                  key={o.fps}
+                  onClick={() => onChange({ ...settings, previewFpsLimit: o.fps, previewVsync: false })}
+                  className={`${btnBase} ${!settings.previewVsync && settings.previewFpsLimit === o.fps ? 'bg-[var(--accent2)] text-white' : 'bg-[var(--chip2)] text-[var(--t3)] hover:bg-[var(--chip)]'}`}
+                  title={o.fps === 0 ? t('previewFpsUnlimited') : `${o.fps} fps`}
+                >
+                  {o.fps === 0 ? t('previewFpsUnlimited') : o.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-[var(--t4)] leading-relaxed mt-2">{t('previewFpsHint')}</p>
+          </section>
+
+          {/* ===== 预览录制：分辨率 / 帧率 / 码率（像 OBS 一样可调）===== */}
+          <section className="pt-5 border-t border-[var(--line)]">
+            <h4 className="text-sm font-black text-[var(--t2)] uppercase tracking-widest mb-3 flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-rose-500" /> {t('recSection')}
+            </h4>
+
+            {/* 分辨率（短边） */}
+            <div className="flex justify-between items-center mb-1.5">
+              <span className="text-[10px] text-[var(--t3)] uppercase font-bold tracking-widest">{t('recResolution')}</span>
+              <span className="text-xs font-mono text-[var(--accent)] font-bold">
+                {settings.recHeight === 1080 ? '1080p' : settings.recHeight === 480 ? '480p' : '720p'}
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 mb-3">
+              {REC_HEIGHT_OPTIONS.map((h) => (
+                <button key={h} onClick={() => onChange({ ...settings, recHeight: h })}
+                  className={`${btnBase} ${settings.recHeight === h ? 'bg-[var(--accent2)] text-white' : 'bg-[var(--chip2)] text-[var(--t3)] hover:bg-[var(--chip)]'}`}>
+                  {h}p
+                </button>
+              ))}
+            </div>
+
+            {/* 帧率 */}
+            <div className="flex justify-between items-center mb-1.5">
+              <span className="text-[10px] text-[var(--t3)] uppercase font-bold tracking-widest">{t('recFps')}</span>
+              <span className="text-xs font-mono text-[var(--accent)] font-bold">{settings.recFps} fps</span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 mb-3">
+              {REC_FPS_OPTIONS.map((f) => (
+                <button key={f} onClick={() => onChange({ ...settings, recFps: f })}
+                  className={`${btnBase} ${settings.recFps === f ? 'bg-[var(--accent2)] text-white' : 'bg-[var(--chip2)] text-[var(--t3)] hover:bg-[var(--chip)]'}`}>
+                  {f}
+                </button>
+              ))}
+            </div>
+
+            {/* 码率 */}
+            <div className="flex justify-between items-center mb-1.5">
+              <span className="text-[10px] text-[var(--t3)] uppercase font-bold tracking-widest">{t('recBitrate')}</span>
+              <span className="text-xs font-mono text-[var(--accent)] font-bold">
+                {(settings.recKbps / 1000).toFixed(1)} Mbps
+              </span>
+            </div>
+            <div className="grid grid-cols-5 gap-1.5">
+              {REC_KBPS_OPTIONS.map((k) => (
+                <button key={k} onClick={() => onChange({ ...settings, recKbps: k })}
+                  className={`${btnBase} px-1 ${settings.recKbps === k ? 'bg-[var(--accent2)] text-white' : 'bg-[var(--chip2)] text-[var(--t3)] hover:bg-[var(--chip)]'}`}
+                  title={`${k} kbps`}>
+                  {(k / 1000).toFixed(1).replace('.0', '')}
+                </button>
+              ))}
+            </div>
+            <div className="mt-2 text-[10px] text-[var(--t4)] font-mono">
+              {t('recEstimate', { size: recSizePerMinute(settings.recKbps).toFixed(1) })}
+            </div>
+            <p className="text-[10px] text-[var(--t4)] leading-relaxed mt-1.5">{t('recHint')}</p>
           </section>
 
           {/* ===== 4 一键复原 ===== */}

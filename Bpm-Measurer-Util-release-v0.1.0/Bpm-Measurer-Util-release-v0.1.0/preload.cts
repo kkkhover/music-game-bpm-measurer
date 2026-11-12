@@ -35,5 +35,38 @@ contextBridge.exposeInMainWorld('electronAPI', {
     audioName: string;
   }) => ipcRenderer.invoke('save-malody-package', options),
   // 启动制谱侧栏（osu-maphelper 独立窗口程序）
-  launchMapHelper: () => ipcRenderer.invoke('launch-maphelper')
+  launchMapHelper: () => ipcRenderer.invoke('launch-maphelper'),
+
+  // ===== v0.9.0 外部谱面通道（只读写磁盘上的 .osu / .osz 工作副本）=====
+  openBeatmap: () => ipcRenderer.invoke('open-beatmap'),
+  // osu! 皮肤（文件夹 / .osk）→ skin.ini + mania 素材的 dataURL，仅供预览渲染，不写回皮肤
+  openSkin: () => ipcRenderer.invoke('open-skin'),
+  // 按记住的皮肤路径重新读取（不弹对话框）：预览重开 / 独立预览窗口都用它
+  loadSkinPath: (src: string) => ipcRenderer.invoke('load-skin-path', src),
+
+  // ===== 谱面预览「独立窗口」（可以把预览拖出软件窗口）=====
+  openPreviewWindow: (bounds?: { x?: number; y?: number; w?: number; h?: number }) =>
+    ipcRenderer.invoke('open-preview-window', bounds),
+  closePreviewWindow: () => ipcRenderer.invoke('close-preview-window'),
+  /** 独立窗口打开时套用上次记住的位置尺寸（位置由独立窗口自己存 localStorage，两窗口同源共享） */
+  setPreviewWindowBounds: (b: { x: number; y: number; w: number; h: number }) =>
+    ipcRenderer.invoke('set-preview-window-bounds', b),
+  onPreviewWindowClosed: (cb: () => void) => {
+    const listener = () => cb();
+    ipcRenderer.on('preview-window-closed', listener);
+    return () => { ipcRenderer.removeListener('preview-window-closed', listener); };
+  },
+
+  readTextFile: (filePath: string) => ipcRenderer.invoke('read-text-file', filePath),
+  statFile: (filePath: string) => ipcRenderer.invoke('stat-file', filePath),
+  writeOsuAtomic: (options: { path: string; content: string; backup?: boolean }) =>
+    ipcRenderer.invoke('write-osu-atomic', options),
+  listOsuBackups: () => ipcRenderer.invoke('list-osu-backups'),
+  restoreOsuBackup: (options: { backup: string; target: string }) =>
+    ipcRenderer.invoke('restore-osu-backup', options),
+  saveBinaryFile: (options: {
+    defaultPath?: string;
+    filters?: { name: string; extensions: string[] }[];
+    bytes: Uint8Array;
+  }) => ipcRenderer.invoke('save-binary-file', options)
 });

@@ -5,6 +5,8 @@ import { computeFFT, getHannWindow } from '../utils/audioUtils';
 import { precomputeSpectrogram, PrecomputedSpectrogram, u8ToVal } from '../utils/spectrogramPrecompute';
 import { buildSpectrogramLUT, SPECTRO_LUT_FREQ, SPECTRO_LUT_SHIFT } from '../utils/settings';
 import { getPointAtTime } from '../utils/timingUtils';
+import { lineColor } from '../utils/osuSkin';
+import type { LineType } from '../types';
 import { t } from '../utils/i18n';
 
 // ===== dB 量化表（频谱兜底路径用）=====
@@ -206,6 +208,27 @@ const Visualizer: React.FC<VisualizerProps> = ({
     if (tmp.width !== w) tmp.width = w;
     if (tmp.height !== h) tmp.height = h;
     return tmp;
+  };
+
+  // 频谱条带专用离屏画布：频谱列先 putImageData 到这块（只有条带那么大），
+  // 再整体 drawImage 到主画布。直接 putImageData 到主画布会让 Chromium 把整幅
+  // 1920×1153 的纹理重传一次 —— 翻页（一次要补 88% 屏宽的新列）实测 ~58ms 大部分耗在这里。
+  const stripRef = useRef<{ c: HTMLCanvasElement; g: CanvasRenderingContext2D; w: number; h: number } | null>(null);
+  const getStrip = (w: number, h: number) => {
+    let s = stripRef.current;
+    if (!s) {
+      const c = document.createElement('canvas');
+      const g = c.getContext('2d', { alpha: true });
+      if (!g) return null;
+      s = { c, g, w: 0, h: 0 };
+      stripRef.current = s;
+    }
+    if (s.w < w || s.h !== h) {
+      s.w = Math.max(s.w, w);
+      s.h = h;
+      s.c.width = s.w; s.c.height = h;
+    }
+    return s;
   };
 
   // ===== 频谱 FFT 列缓存（键=sampleIdx，跳转/缩放时复用已计算列，避免重复 FFT）=====
@@ -505,9 +528,19 @@ const Visualizer: React.FC<VisualizerProps> = ({
                 buf[y * colW + px] = col[fullHeight - 1 - y];
             }
         }
-        ctx.putImageData(idata, px0, 0);
+        // 写进条带画布（尺寸只有条带那么大），再 1:1 贴回主画布：
+        // 避免 putImageData 直接打在主画布上触发整幅纹理重传（翻页卡顿的主因）。
+        const strip = getStrip(colW, fullHeight);
+        if (strip) {
+            strip.g.putImageData(idata, 0, 0, 0, 0, colW, fullHeight);
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);   // 设备像素对齐，保证 1:1 不重采样
+            ctx.drawImage(strip.c, 0, 0, colW, fullHeight, px0, 0, colW, fullHeight);
+            ctx.restore();
+        } else {
+            ctx.putImageData(idata, px0, 0);
+        }
     };
-
     const last = specLastRef.current;
     // 「渲染参数」= 影响单列像素结果的东西（配色/对数刻度/灵敏度/尺寸/FFT）。
     // 缩放**不属于**渲染参数：列缓存键是 sampleIdx，与 zoom 无关，缩放时清空等于把
@@ -529,7 +562,9 @@ const Visualizer: React.FC<VisualizerProps> = ({
 
     if (sameRender && sameZoom && sameSource && dx === 0) return; // 视口和数据源都没变 → 不重画
 
-    if (sameRender && sameZoom && dx !== 0 && Math.abs(dx) < intWidth) {
+    // 页翻（一次跳大半屏）时旧内容只剩一小条能复用：走平移路径要做两次整幅 blit 却只省下 12%，
+    // 反而更慢 —— 超过半屏就直接全量重画。
+    if (sameRender && sameZoom && dx !== 0 && Math.abs(dx) < intWidth * 0.5) {
         // 平移复用：旧内容平移 dx，只重算露出的边缘列
         const tmp = getTmp(fullWidth, fullHeight);
         const tctx = tmp.getContext('2d')!;
@@ -632,23 +667,28 @@ const Visualizer: React.FC<VisualizerProps> = ({
         // 红线 = 段起点（每条红线自带 BPM，位置由红线的绝对时间决定，改 BPM 不会挪动下一条红线）
         // 蓝线 = 节拍线：每拍一条，间距 = 60 / 该红线自己的 BPM（BPM 只和蓝线距离关联）
         // 绘制顺序：先红后蓝 —— 红蓝重合时蓝线叠加在红线上，红线不会盖住蓝线
+        // ★ v0.9.0：timing 线按卡片线型分色 —— 绿线绿 / 红线红 / 红+绿橙
+        // 三组仍然各自一次 stroke/fill，不增加逐帧开销。
         const redXs: number[] = [];
+        const greenXs: number[] = [];
+        const bothXs: number[] = [];
         const strongXs: number[] = [];
         const weakXs: number[] = [];
         const weakArrowXs: number[] = [];
         const strongArrowXs: number[] = [];
-        const redLabels: { x: number; text: string }[] = [];
+        const lineLabels: { x: number; text: string; color: string }[] = [];
         const beatLabels: { x: number; text: string }[] = [];
         // 段起点时间集合（用于避免蓝线编号与红色段起点编号文字重叠）
         const sectionStartSet = new Set(timingPoints.map(p => Math.round((p.time + beatLineDelaySec) * 1000)));
 
-        // ---- 第一遍：红色段起点（2px）----
+        // ---- 第一遍：timing 段起点，按线型分三组着色 ----
         for (let i = 0; i < timingPoints.length; i++) {
             const point = timingPoints[i];
             const x = timeToX(point.time + beatLineDelaySec);
             if (x < x0 - 2 || x > x1 + 2) continue;
-            redXs.push(x);
-            redLabels.push({ x, text: point.beatIndex.toString() }); // 红色段起点标全局拍号
+            const type: LineType = point.lineType ?? (point.sv === false ? 'red' : 'both');
+            (type === 'green' ? greenXs : type === 'red' ? redXs : bothXs).push(x);
+            lineLabels.push({ x, text: point.beatIndex.toString(), color: lineColor(type) });
         }
 
         // ---- 第二遍：蓝色节拍线（每拍一条，密度由该段 BPM 决定）----
@@ -710,17 +750,24 @@ const Visualizer: React.FC<VisualizerProps> = ({
             for (const x of xs) { ctx.moveTo(x, arrowY0); ctx.lineTo(x - 5, arrowY0 + 8); ctx.lineTo(x + 5, arrowY0 + 8); }
             ctx.fill();
         };
-        // 先红后蓝：红蓝重合时蓝线叠在红线上（与旧版视觉顺序一致）
-        strokeVlines(redXs, '#ef4444', 2);
+        // 先 timing 线后蓝线：蓝线重合时叠在线上（与旧版视觉顺序一致）
+        const C_RED = '#ef4444', C_GREEN = '#3cc83c', C_BOTH = '#f59e0b';
+        strokeVlines(greenXs, C_GREEN, 1.5);
+        strokeVlines(redXs, C_RED, 2);
+        strokeVlines(bothXs, C_BOTH, 2);
         strokeVlines(weakXs, 'rgba(0, 242, 255, 0.35)', 1);
         strokeVlines(strongXs, 'rgba(0, 242, 255, 0.95)', 2);
-        fillArrows(redXs, '#ef4444');
+        fillArrows(greenXs, C_GREEN);
+        fillArrows(redXs, C_RED);
+        fillArrows(bothXs, C_BOTH);
         fillArrows(weakArrowXs, 'rgba(0, 242, 255, 0.5)');
         fillArrows(strongArrowXs, 'rgba(0, 242, 255, 0.95)');
-        if (redLabels.length || beatLabels.length) {
+        if (lineLabels.length || beatLabels.length) {
             ctx.font = 'bold 12px sans-serif';
-            ctx.fillStyle = '#ef4444';
-            for (const l of redLabels) ctx.fillText(l.text, l.x, arrowY0 + 22);
+            for (const l of lineLabels) {
+                ctx.fillStyle = l.color;
+                ctx.fillText(l.text, l.x, arrowY0 + 22);
+            }
             ctx.fillStyle = '#00f2ff';
             for (const l of beatLabels) ctx.fillText(l.text, l.x, arrowY0 + 22);
         }

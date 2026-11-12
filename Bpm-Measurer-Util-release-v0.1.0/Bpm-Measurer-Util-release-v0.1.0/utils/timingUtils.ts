@@ -30,8 +30,10 @@ export const recalculateTiming = (offset: number, points: Omit<TimingPoint, 'tim
     const rawTime = (typeof curr.timeSec === 'number' && isFinite(curr.timeSec))
       ? curr.timeSec
       : prev.time + (curr.beatIndex - prevStored.beatIndex) * beatDur;
-    // 防呆：不允许早于/等于前一条红线（拖动越界时钳制）
-    const time = Math.max(prev.time + 0.001, rawTime);
+    // 防呆：不允许早于前一条（拖动越界时钳制）。
+    // v0.9.0：允许「同刻」——osu! 的红线+绿线常在同一毫秒，旧的 +0.001 会让
+    // 几千条绿线逐条累积漂移（最后一张卡片显示时间偏几秒），写回也会错位。
+    const time = Math.max(prev.time, rawTime);
     // 派生整数拍号（供节拍器调度 / 导出 / 编号使用，至少 1 拍）
     const beats = Math.max(1, Math.round((time - prev.time) / beatDur));
 

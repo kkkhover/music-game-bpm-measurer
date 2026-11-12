@@ -72,6 +72,19 @@ export interface AppSettings {
   beatLineDelayMs: number; // 红线节拍线延迟手动微调（毫秒，滑条 ±100 / 输入框任意值）：仅偏移节拍线显示位置，不影响频谱/声谱时间轴
   specFFTSize: number;  // 频谱 FFT 精度（采样点数，2 的幂）：越大频率分辨率越高（0.5K≈86Hz / 1K≈43Hz / 2K≈21Hz / 4K≈11Hz @44.1kHz）
   specSensitivity: number; // 频谱显示灵敏度（dB 阈值）：低于该 dB 显示为黑色，越小越敏感（60~120）
+  // ---- 谱面预览窗口帧率 ----
+  // previewVsync=true：跟着显示器垂直同步走（rAF 每刷新一次就画一次，144Hz 屏就是 144fps）；
+  // false：按 previewFpsLimit 限帧（0 = 无限制，能画多快画多快）。
+  previewVsync: boolean;
+  previewFpsLimit: number;
+  // ---- 预览录制（像 OBS 那样可调：分辨率 / 帧率 / 码率）----
+  // recHeight 是**短边**像素（竖屏小窗 → 宽度；横屏 → 高度），长边按小窗比例自动算，
+  // 上限 16:9（1080 短边 → 长边 ≤1920）。
+  recHeight: number;
+  recFps: number;
+  recKbps: number;      // 视频码率（kbps）；音频固定 128 kbps
+  /** 节拍器是否混进录制音轨（扬声器里始终听得到，这里只控制"录不录"） */
+  recordMetronome: boolean;
   // ---- 语言 ----
   lang: Language;
 }
@@ -94,8 +107,43 @@ export const DEFAULT_SETTINGS: AppSettings = {
   beatLineDelayMs: 30, // 默认红线节拍线延迟 30ms（v0.7.22 起；用户仍可在设置里微调）
   specFFTSize: 1024, // 默认 1K 精度（频率分辨率 ~43Hz，兼顾清晰度与性能）
   specSensitivity: 75, // 默认灵敏度阈值 75dB（弱信号较明显，画面通透）
+  previewVsync: true, // 默认跟随屏幕垂直同步（用户要求：预览帧率跟垂直同步或更高）
+  previewFpsLimit: 60, // 关掉垂直同步后生效，默认 60
+  // 录制默认 720p / 60fps / 2000kbps：比旧版硬编码的 3.3Mbps 小 40%，
+  // 而预览画面大部分是纯色块与纯色轨道，2000kbps 的 H.264 已经看不出压缩痕。
+  recHeight: 720,
+  recFps: 60,
+  recKbps: 2000,
+  // 默认不录节拍器：节拍器是给自己打拍子用的，成品视频里多半不想要。
+  // 需要的人可以在预览工具条上一键打开（只影响录制音轨，扬声器照常响）。
+  recordMetronome: false,
   lang: 'zh',
 };
+
+/** 录制分辨率挡位（短边像素）：480p / 720p / 1080p */
+export const REC_HEIGHT_OPTIONS = [480, 720, 1080];
+/** 录制帧率挡位 */
+export const REC_FPS_OPTIONS = [30, 60, 120];
+/** 录制码率挡位（kbps，视频轨；音频固定 128k） */
+export const REC_KBPS_OPTIONS = [1200, 2000, 3000, 4500, 8000];
+
+/** 录制参数 → 估算每分钟体积（MB）：(视频+音频 kbps) × 60 / 8 / 1024
+ *  实际码率会低于设定值（静态画面多时 H.264 自己会降），这里乘 0.85 的经验系数。 */
+export function recSizePerMinute(kbps: number): number {
+  return ((kbps + 128) * 60 / 8 / 1024) * 0.85;
+}
+
+/** 预览帧率挡位：0 = 无限制（能画多快画多快）。数值直接是目标 fps。 */
+export const PREVIEW_FPS_OPTIONS: { fps: number; label: string }[] = [
+  { fps: 30, label: '30' },
+  { fps: 60, label: '60' },
+  { fps: 90, label: '90' },
+  { fps: 120, label: '120' },
+  { fps: 144, label: '144' },
+  { fps: 165, label: '165' },
+  { fps: 240, label: '240' },
+  { fps: 0, label: '∞' },
+];
 
 // ---- 预设主题（整套配色一键应用）----
 export interface ThemePreset {

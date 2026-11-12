@@ -19,6 +19,18 @@ declare global {
       onAudioFileProcessed: (callback: (data: any) => void) => () => void;
       // 启动制谱侧栏（osu-maphelper）
       launchMapHelper: () => Promise<{ ok: boolean; alreadyRunning?: boolean; pid?: number; dir?: string; error?: string }>;
+      // ===== 谱面预览：皮肤 / 独立窗口（preload.cts 里同步暴露）=====
+      openSkin?: () => Promise<any>;
+      loadSkinPath?: (src: string) => Promise<any>;
+      openPreviewWindow?: (bounds?: { x?: number; y?: number; w?: number; h?: number }) => Promise<{ ok: boolean; reused?: boolean; error?: string }>;
+      closePreviewWindow?: () => Promise<{ ok: boolean }>;
+      setPreviewWindowBounds?: (b: { x: number; y: number; w: number; h: number }) => Promise<{ ok: boolean; error?: string }>;
+      onPreviewWindowClosed?: (cb: () => void) => () => void;
+      saveBinaryFile?: (options: {
+        defaultPath?: string;
+        filters?: Array<{ name: string; extensions: string[] }>;
+        bytes: Uint8Array;
+      }) => Promise<{ ok: boolean; path?: string; size?: number; canceled?: boolean; error?: string }>;
     };
   }
 }

@@ -3,6 +3,8 @@ import path from 'path';
 import fs from 'fs';
 import zlib from 'zlib'; // 只用来做 Malody 谱面包(.mcz) 里的 deflate 条目
 import { fileURLToPath } from 'url';
+import { readZip } from './src/zipReader.js';
+import { buildSkinPayload, skinPathExists } from './src/skinFiles.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -62,6 +64,8 @@ if (PERF_PROFILE.lowEnd) {
 }
 
 let mainWindow: BrowserWindow | null = null;
+/** 谱面预览的「独立窗口」（把预览拖出软件用的那个真正的 OS 窗口，见下方 open-preview-window） */
+let previewWindow: BrowserWindow | null = null;
 
 // 解析启动参数里的音频文件：支持 `--open-audio=<路径>`，也支持把音频直接拖到 exe 图标上（裸路径参数）
 const AUDIO_EXT_RE = /\.(wav|mp3|flac|aac|ogg|wma)$/i;
@@ -119,6 +123,8 @@ const createWindow = () => {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    // 独立预览窗口是「主窗口的附属」：主窗口关了它不能单独留着（否则进程不退出）
+    if (previewWindow && !previewWindow.isDestroyed()) previewWindow.close();
   });
 };
 
@@ -515,6 +521,262 @@ ipcMain.handle('launch-maphelper', async () => {
   } catch (err) {
     return { ok: false, error: String(err) };
   }
+});
+
+// ============================================================================
+// v0.9.0 外部谱面通道（只读外部文件，绝不接游戏进程 / tosu / gosumemory）
+// ============================================================================
+
+const AUDIO_EXTS = new Set(['.mp3', '.ogg', '.wav', '.flac', '.m4a', '.aac']);
+
+function findAudioIn(dir: string, osuText = ''): string {
+  const m = osuText.match(/^\s*AudioFilename\s*:\s*(.+)$/m);
+  if (m) {
+    const p = path.join(dir, m[1].trim());
+    if (fs.existsSync(p)) return p;
+  }
+  try {
+    for (const n of fs.readdirSync(dir)) {
+      if (AUDIO_EXTS.has(path.extname(n).toLowerCase())) return path.join(dir, n);
+    }
+  } catch { /* ignore */ }
+  return '';
+}
+
+/** 只保留最近 N 个目录/文件，避免缓存与备份无限膨胀 */
+function prune(dir: string, keep: number) {
+  try {
+    const items = fs.readdirSync(dir)
+      .map(n => ({ n, p: path.join(dir, n), m: fs.statSync(path.join(dir, n)).mtimeMs }))
+      .sort((a, b) => b.m - a.m);
+    for (const it of items.slice(keep)) fs.rmSync(it.p, { recursive: true, force: true });
+  } catch { /* ignore */ }
+}
+
+const cacheRoot = () => path.join(app.getPath('userData'), 'beatmap-cache');
+const backupRoot = () => path.join(app.getPath('userData'), 'osu-backups');
+
+/** 选一个外部 .osu / .osz；.osz 解压到工作副本目录后再给路径（写回只作用于副本） */
+ipcMain.handle('open-beatmap', async () => {
+  if (!mainWindow) return null;
+  const r = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile'],
+    filters: [{ name: 'osu! Beatmap', extensions: ['osu', 'osz'] }, { name: 'All Files', extensions: ['*'] }]
+  });
+  if (r.canceled || !r.filePaths[0]) return null;
+  const src = r.filePaths[0];
+  try {
+    if (/\.osu$/i.test(src)) {
+      const text = fs.readFileSync(src, 'utf8');
+      return {
+        sourcePath: src,
+        fromOsz: false,
+        entries: [{ name: path.basename(src), path: src, text }],
+        audioPath: findAudioIn(path.dirname(src), text),
+      };
+    }
+    if (/\.osz$/i.test(src)) {
+      const safe = path.basename(src).replace(/[^\w\u4e00-\u9fa5.\- ]/g, '_').slice(0, 80);
+      const dir = path.join(cacheRoot(), `${safe}-${Date.now().toString(36)}`);
+      fs.mkdirSync(dir, { recursive: true });
+      for (const e of readZip(fs.readFileSync(src))) fs.writeFileSync(path.join(dir, e.name), e.data);
+      prune(cacheRoot(), 5);
+      const osuNames = fs.readdirSync(dir).filter(n => n.toLowerCase().endsWith('.osu')).sort();
+      const entries = osuNames.map(n => ({ name: n, path: path.join(dir, n), text: fs.readFileSync(path.join(dir, n), 'utf8') }));
+      const audioPath = findAudioIn(dir, entries[0]?.text || '');
+      return { sourcePath: src, fromOsz: true, workDir: dir, entries, audioPath };
+    }
+    return { error: '只支持 .osu / .osz 文件' };
+  } catch (err) {
+    return { error: String(err) };
+  }
+});
+
+ipcMain.handle('read-text-file', async (_e, p: string) => {
+  try { return fs.readFileSync(p, 'utf8'); } catch { return null; }
+});
+
+ipcMain.handle('stat-file', async (_e, p: string) => {
+  try { const s = fs.statSync(p); return { mtimeMs: s.mtimeMs, size: s.size }; } catch { return null; }
+});
+
+/** 原子写回：先备份 → 写 .bpmtmp → rename。只有 .osu 后缀可写。 */
+ipcMain.handle('write-osu-atomic', async (_e, opts: { path: string; content: string; backup?: boolean }) => {
+  const p = String(opts?.path || '');
+  if (!/\.osu$/i.test(p)) return { ok: false, error: '拒绝写入：只允许 .osu 文件' };
+  if (!fs.existsSync(p)) return { ok: false, error: '目标 .osu 不存在，已停止写回' };
+  if (typeof opts?.content !== 'string') return { ok: false, error: '写入内容为空' };
+  try {
+    let backupPath = '';
+    if (opts.backup !== false) {
+      const bd = backupRoot();
+      fs.mkdirSync(bd, { recursive: true });
+      backupPath = path.join(bd, `${Date.now()}-${path.basename(p)}`);
+      fs.copyFileSync(p, backupPath);
+      prune(bd, 10); // 只留最近 10 份，防止磁盘被备份吃满
+    }
+    const tmp = `${p}.bpmtmp`;
+    fs.writeFileSync(tmp, opts.content, 'utf8');
+    fs.renameSync(tmp, p);
+    return { ok: true, backupPath, mtimeMs: fs.statSync(p).mtimeMs };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+ipcMain.handle('list-osu-backups', async () => {
+  try {
+    const bd = backupRoot();
+    if (!fs.existsSync(bd)) return [];
+    return fs.readdirSync(bd).map(n => ({ name: n, path: path.join(bd, n), mtimeMs: fs.statSync(path.join(bd, n)).mtimeMs }))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  } catch { return []; }
+});
+
+ipcMain.handle('restore-osu-backup', async (_e, opts: { backup: string; target: string }) => {
+  if (!opts?.backup || !opts?.target || !/\.osu$/i.test(opts.target)) return { ok: false, error: '参数不合法' };
+  try {
+    if (!path.resolve(opts.backup).startsWith(path.resolve(backupRoot()))) return { ok: false, error: '备份路径不合法' };
+    fs.copyFileSync(opts.backup, opts.target);
+    return { ok: true };
+  } catch (err) { return { ok: false, error: String(err) }; }
+});
+
+/** 二进制保存（PNG 长图 / WebM 录制）—— 对话框挂在发起请求的那个窗口上
+ *  （独立预览窗口也在用，不能一律挂在主窗口，否则对话框会跑到另一个窗口后面）。 */
+ipcMain.handle('save-binary-file', async (event, opts: {
+  defaultPath?: string;
+  filters?: { name: string; extensions: string[] }[];
+  bytes: Uint8Array;
+}) => {
+  const parent = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+  if (!parent) return { ok: false, error: '窗口不可用' };
+  const r = await dialog.showSaveDialog(parent, {
+    defaultPath: opts?.defaultPath || 'export.bin',
+    filters: opts?.filters || [{ name: 'All Files', extensions: ['*'] }]
+  });
+  if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+  try {
+    const buf = Buffer.from(opts.bytes ?? new Uint8Array());
+    fs.writeFileSync(r.filePath, buf);
+    return { ok: true, path: r.filePath, size: buf.length };
+  } catch (err) { return { ok: false, error: String(err) }; }
+});
+
+// ============================================================================
+// osu! 皮肤导入（预览用）：皮肤文件夹 或 .osk（zip）
+// 具体实现在 src/skinFiles.ts：按 skin.ini 引用的 stem 精确取图（自定义路径
+// 如 Orbs\izquierda 也能命中）、@2x 优先、自动定位内嵌皮肤目录、总量上限。
+// ============================================================================
+/** 选皮肤（弹目录对话框）。payload 里带 srcPath，渲染进程把它记住，下次直接重读。 */
+ipcMain.handle('open-skin', async (event) => {
+  const parent = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+  if (!parent) return null;
+  const r = await dialog.showOpenDialog(parent, {
+    title: '选择 osu! 皮肤文件夹或 .osk',
+    properties: ['openFile', 'openDirectory'],
+    filters: [{ name: 'osu! Skin', extensions: ['osk'] }, { name: 'All Files', extensions: ['*'] }]
+  });
+  if (r.canceled || !r.filePaths[0]) return null;
+  try {
+    return buildSkinPayload(r.filePaths[0]);
+  } catch (err) {
+    return { error: String(err), srcPath: r.filePaths[0] };
+  }
+});
+
+/**
+ * 按「记住的皮肤路径」重新读取（不弹对话框）。
+ * 预览小窗重开、或把预览弹成独立窗口时都走这条 —— 用户不必每次重新选皮肤。
+ */
+ipcMain.handle('load-skin-path', async (_e, src: string) => {
+  const p = String(src || '');
+  if (!p) return { error: '皮肤路径为空' };
+  if (!skinPathExists(p)) return { error: `皮肤路径已失效（文件或文件夹不在了）：${p}`, srcPath: p, missing: true };
+  try {
+    return buildSkinPayload(p);
+  } catch (err) {
+    return { error: String(err), srcPath: p };
+  }
+});
+
+// ============================================================================
+// 谱面预览「独立窗口」
+// ============================================================================
+// 为什么需要它：内嵌小窗是渲染进程里的 position:fixed 元素，**永远不可能拖出软件窗口**。
+// 想让预览飘到 osu! 窗口旁边看，只能是另一个真正的 OS 窗口。
+// 数据只走 BroadcastChannel（同一个 file:// 源，渲染进程之间直连、不经过主进程）：
+//   主窗口 → 独立窗口：{ doc, points, 皮肤路径, 显示选项, 播放头 tick }
+//   独立窗口 → 主窗口：{ play / pause / seek }（点录制时自动开播也用它）
+// 主进程这里只负责"把窗口建出来 / 关掉 / 记住位置尺寸"。
+const PREVIEW_MIN = { w: 200, h: 260 };
+
+ipcMain.handle('open-preview-window', async (event, opts?: { x?: number; y?: number; w?: number; h?: number }) => {
+  if (previewWindow && !previewWindow.isDestroyed()) {
+    previewWindow.show();
+    previewWindow.focus();
+    return { ok: true, reused: true };
+  }
+  const parent = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+  const w = Math.max(PREVIEW_MIN.w, Math.round(opts?.w || 380));
+  const h = Math.max(PREVIEW_MIN.h, Math.round(opts?.h || 640));
+  // 位置兜底：没有记住的位置就贴着主窗口右侧开
+  let x = Number.isFinite(opts?.x) ? Math.round(opts!.x!) : undefined;
+  let y = Number.isFinite(opts?.y) ? Math.round(opts!.y!) : undefined;
+  if (x === undefined || y === undefined) {
+    const b = parent?.getBounds();
+    x = b ? Math.min(b.x + b.width + 24, 4000) : 100;
+    y = b ? b.y + 60 : 100;
+  }
+  previewWindow = new BrowserWindow({
+    x, y, width: w, height: h,
+    minWidth: PREVIEW_MIN.w, minHeight: PREVIEW_MIN.h,
+    // 无边框：标题栏由页面自己画（可拖动、可关），这样比例完全自由，也没有多余的菜单栏
+    frame: false,
+    resizable: true,
+    maximizable: false,
+    fullscreenable: false,
+    backgroundColor: '#141420',
+    title: '谱面预览',
+    icon: path.join(__dirname, 'icon.ico'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      backgroundThrottling: false,
+    },
+  });
+  previewWindow.setMenuBarVisibility(false);
+  previewWindow.removeMenu();
+  previewWindow.loadFile(path.join(__dirname, '../dist/preview.html'));
+  previewWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  previewWindow.on('closed', () => {
+    previewWindow = null;
+    // 独立窗口关掉 → 主窗口把内嵌小窗恢复出来（不然用户会以为预览没了）
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('preview-window-closed');
+  });
+  return { ok: true };
+});
+
+ipcMain.handle('close-preview-window', async () => {
+  if (previewWindow && !previewWindow.isDestroyed()) previewWindow.close();
+  return { ok: true };
+});
+
+/** 独立窗口打开时套用上次记住的位置尺寸（位置由独立窗口自己存 localStorage，主窗口同源共享） */
+ipcMain.handle('set-preview-window-bounds', async (_e, b: { x: number; y: number; w: number; h: number }) => {
+  if (!previewWindow || previewWindow.isDestroyed()) return { ok: false };
+  try {
+    previewWindow.setBounds({
+      x: Math.round(b.x), y: Math.round(b.y),
+      width: Math.max(PREVIEW_MIN.w, Math.round(b.w)),
+      height: Math.max(PREVIEW_MIN.h, Math.round(b.h)),
+    });
+    return { ok: true };
+  } catch (err) { return { ok: false, error: String(err) }; }
 });
 
 app.whenReady().then(() => {

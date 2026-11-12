@@ -3,20 +3,26 @@ import {
     Play, Pause, Square, ZoomIn, ZoomOut, Upload, Music, 
     Volume2, VolumeX, Plus, Trash2, Settings, 
     PanelRightClose, PanelRightOpen, Sliders, 
-    Download, FileUp, Info, MousePointer2, Keyboard, HelpCircle, Gauge, ChevronDown, LocateFixed, Check, X, ArrowUp
+    Download, FileUp, Info, MousePointer2, Keyboard, HelpCircle, Gauge, ChevronDown, LocateFixed, Check, X, ArrowUp,
+    Eye, FolderOpen, RotateCcw, AlertTriangle, Save, PictureInPicture2
 } from 'lucide-react';
 import Visualizer from './components/Visualizer';
 import OverviewBar from './components/OverviewBar';
 import SettingsModal from './components/SettingsModal';
-import { AudioData, ViewState, TimingPoint } from './types';
+import BeatmapPreview from './components/BeatmapPreview';
+import { AudioData, ViewState, TimingPoint, LineType } from './types';
 import { extractPeaks } from './utils/audioUtils';
 import { recalculateTiming, getPointAtTime, getTimeAtBeatIndex } from './utils/timingUtils';
 import { parseTimingFile } from './utils/timingParser';
 import { handleFileUpload } from './utils/fileUtils';
 import { generateOsuTimingPoints } from './utils/osuExport';
+import { parseOsuDocument, docToPoints, OsuDocument } from './utils/osuBeatmap';
+import { patchOsuDocument, verifyTimingOnlyChange, PatchPoint } from './utils/osuPatch';
 import { generateAdofaiChart, generateMalodyChart, generatePhigrosChart, generateArcaeaAff, generateVividStasisChart } from './utils/gameExports';
 import { AppSettings, loadSettings, saveSettings, clearSettings, DEFAULT_SETTINGS, hexLuminance, getMetronomeSound } from './utils/settings';
 import { t, setLang } from './utils/i18n';
+import { PREVIEW_CHANNEL, type PreviewCommand } from './utils/previewBridge';
+import { createStretchPlayer, type StretchHandle } from './utils/stretchPlayer';
 
 const MIN_ZOOM = 10;
 const MAX_ZOOM = 1500;
@@ -26,193 +32,139 @@ const DEFAULT_ZOOM = 250;
 const FOLLOW_TRIGGER_RATIO = 0.9;
 const FOLLOW_LEAD_RATIO = 0.1;
 
+// 虚拟列表固定行高：一张卡片 228px + 16px 间距
+const ROW_H = 244;
+// 直接写回原 .osu 是有风险的动作 → 每个会话首次导入时确认一次即可
+let writeBackConfirmedOnce = false;
+
 interface TimingRowProps {
     point: TimingPoint;
     index: number;
     totalCount: number;
-    onUpdate: (id: string, field: 'bpm' | 'beatIndex' | 'sv' | 'svRate' | 'meter', value: number | boolean) => void;
+    onUpdate: (id: string, field: 'bpm' | 'beatIndex' | 'sv' | 'svRate' | 'meter' | 'lineType', value: number | boolean | LineType) => void;
     onRemove: (id: string) => void;
-    onUpdateTime: (id: string, time: number) => void; // 修改该红线的时间戳（秒）
-    onJumpToTime?: (sec: number) => void; // 双击卡片 → 时间轴跳转到该红线位置
-    flash?: boolean; // 从频谱点击小节线跳转时的高亮闪烁
+    onUpdateTime: (id: string, time: number) => void;
+    onJumpToTime?: (sec: number) => void;
+    flash?: boolean;
+    height?: number; // 虚拟列表需要固定行高
 }
 
-const TimingRow: React.FC<TimingRowProps> = ({ point, index, totalCount, onUpdate, onRemove, onUpdateTime, onJumpToTime, flash = false }) => {
+/** 固定高度卡片：红线改 BPM、绿线改 SV、两者都写时两个框都可用。默认 SV = 1（正常流速）。 */
+const TimingRow: React.FC<TimingRowProps> = ({ point, index, totalCount, onUpdate, onRemove, onUpdateTime, onJumpToTime, flash = false, height = 228 }) => {
     const [bpmStr, setBpmStr] = useState(point.bpm.toFixed(2));
     const [beatStr, setBeatStr] = useState(point.beatIndex.toString());
     const [timeStr, setTimeStr] = useState(point.time.toFixed(3));
     const [meterStr, setMeterStr] = useState(String(point.meter ?? 4));
+    // 导入的 SV 是「全精度」存的（保证写回逐位一致），输入框只显示 3 位小数
+    const svDisplay = (v?: number) => String(Math.round((v && v > 0 ? v : 1) * 1000) / 1000);
+    const [svStr, setSvStr] = useState(svDisplay(point.svRate));
 
+    useEffect(() => { if (Math.abs(parseFloat(bpmStr) - point.bpm) > 0.001) setBpmStr(point.bpm.toFixed(2)); }, [point.bpm]);
+    useEffect(() => { if (Math.abs(parseFloat(beatStr) - point.beatIndex) > 0.001) setBeatStr(point.beatIndex.toString()); }, [point.beatIndex]);
+    useEffect(() => { if (Math.abs(parseFloat(timeStr) - point.time) > 0.0005) setTimeStr(point.time.toFixed(3)); }, [point.time]);
+    useEffect(() => { const m = point.meter ?? 4; if (parseInt(meterStr, 10) !== m) setMeterStr(String(m)); }, [point.meter]);
     useEffect(() => {
-        if (Math.abs(parseFloat(bpmStr) - point.bpm) > 0.001) {
-             setBpmStr(point.bpm.toFixed(2));
-        }
-    }, [point.bpm]);
+        const v = point.svRate && point.svRate > 0 ? point.svRate : 1;
+        if (Math.abs(parseFloat(svStr) - v) > 0.0006) setSvStr(svDisplay(v));
+    }, [point.svRate]);
 
-    useEffect(() => {
-        if (Math.abs(parseFloat(beatStr) - point.beatIndex) > 0.001) {
-            setBeatStr(point.beatIndex.toString());
-        }
-    }, [point.beatIndex]);
-
-    useEffect(() => {
-        if (Math.abs(parseFloat(timeStr) - point.time) > 0.0005) {
-            setTimeStr(point.time.toFixed(3));
-        }
-    }, [point.time]);
-
-    // 拍号（meter）变化时同步输入框（默认 4）
-    useEffect(() => {
-        const m = point.meter ?? 4;
-        if (parseInt(meterStr, 10) !== m) {
-            setMeterStr(String(m));
-        }
-    }, [point.meter]);
-
-    // 时间戳提交：直接改这条红线的时间（起点锚点 = 全局 Offset）
-    const handleBlurTime = () => {
-        const val = parseFloat(timeStr);
-        if (!isNaN(val) && val >= 0) {
-            const rounded = Math.round(val * 1000) / 1000;
-            onUpdateTime(point.id, rounded);
-            setTimeStr(rounded.toFixed(3));
-        } else {
-            setTimeStr(point.time.toFixed(3));
-        }
-    };
-
-    const handleBlurBpm = () => {
-        const val = parseFloat(bpmStr);
-        if (!isNaN(val) && val > 0) {
-            const rounded = Math.round(val * 100) / 100;
-            onUpdate(point.id, 'bpm', rounded);
-            setBpmStr(rounded.toFixed(2));
-        } else {
-            setBpmStr(point.bpm.toFixed(2));
-        }
-    };
-
-    const handleBlurBeat = () => {
-        const val = parseFloat(beatStr);
-        if (!isNaN(val) && val >= 0) {
-             onUpdate(point.id, 'beatIndex', val);
-             setBeatStr(val.toString());
-        } else {
-             setBeatStr(point.beatIndex.toString());
-        }
-    };
-
-    // 拍号提交：整数、至少 1（osu! 的 meter 语义 = 每小节几拍）
-    const handleBlurMeter = () => {
-        const val = parseInt(meterStr, 10);
-        if (!isNaN(val) && val >= 1) {
-            onUpdate(point.id, 'meter', val);
-            setMeterStr(String(val));
-        } else {
-            setMeterStr(String(point.meter ?? 4));
-        }
-    };
+    const blurBpm = () => { const v = parseFloat(bpmStr); if (Number.isFinite(v) && v > 0) { const r = Math.round(v * 100) / 100; onUpdate(point.id, 'bpm', r); setBpmStr(r.toFixed(2)); } else setBpmStr(point.bpm.toFixed(2)); };
+    const blurBeat = () => { const v = parseFloat(beatStr); if (Number.isFinite(v) && v >= 0) onUpdate(point.id, 'beatIndex', v); else setBeatStr(point.beatIndex.toString()); };
+    const blurMeter = () => { const v = parseInt(meterStr, 10); if (Number.isFinite(v) && v >= 1) onUpdate(point.id, 'meter', v); else setMeterStr(String(point.meter ?? 4)); };
+    const blurSv = () => { const v = parseFloat(svStr); if (Number.isFinite(v) && v > 0) { const r = Math.round(v * 1000) / 1000; onUpdate(point.id, 'svRate', r); setSvStr(String(r)); } else setSvStr('1'); };
+    const blurTime = () => { const v = parseFloat(timeStr); if (Number.isFinite(v) && v >= 0) { const r = Math.round(v * 1000) / 1000; onUpdateTime(point.id, r); setTimeStr(r.toFixed(3)); } else setTimeStr(point.time.toFixed(3)); };
 
     const isStartAnchor = point.beatIndex === 0;
+    const type: LineType = point.lineType ?? (point.sv === false ? 'red' : 'both');
+    const hasRed = type === 'red' || type === 'both';
+    const hasGreen = type === 'green' || type === 'both';
+    const segBtn = (key: LineType, label: string, activeColor: string) => (
+        <button
+            key={key}
+            onClick={() => onUpdate(point.id, 'lineType', key)}
+            title={key === 'red' ? t('lineTypeRedHint') : key === 'green' ? t('lineTypeGreenHint') : t('lineTypeBothHint')}
+            className={`flex-1 py-1 text-[10px] font-black rounded-md transition-all ${type === key ? activeColor : 'text-[var(--t4)] hover:text-[var(--t2)]'}`}
+        >{label}</button>
+    );
+    const inputCls = 'w-full h-[28px] bg-[var(--bg)] border border-[var(--line2)] rounded-md px-2 text-xs font-mono focus:outline-none focus:border-[var(--accent)] disabled:opacity-30';
+    const labelCls = 'text-[9px] text-[var(--t4)] block mb-0.5 uppercase font-bold';
 
     return (
         <div id={`section-row-${point.id}`}
              onDoubleClick={() => onJumpToTime?.(point.time)}
              title={t('jumpSection')}
-             className={`bg-[var(--chip2)] rounded-xl p-5 border-l-4 ${isStartAnchor ? 'border-red-500' : 'border-[var(--accent)]'} group transition-all duration-200 shadow-lg ${flash ? 'ring-2 ring-amber-400 shadow-[0_0_20px_rgba(251,191,36,0.5)]' : ''}`}>
-            <div className="flex justify-between items-center mb-3">
-                <span className="text-xs font-black text-[var(--t3)] tracking-widest uppercase">
+             style={{ height }}
+             className={`bg-[var(--chip2)] rounded-xl p-3 border-l-4 flex flex-col gap-1.5 overflow-hidden ${isStartAnchor ? 'border-red-500' : 'border-[var(--accent)]'} group transition-all duration-200 shadow-lg ${flash ? 'ring-2 ring-amber-400 shadow-[0_0_20px_rgba(251,191,36,0.5)]' : ''}`}>
+            {/* 标题行 */}
+            <div className="flex justify-between items-center shrink-0">
+                <span className="text-[10px] font-black text-[var(--t3)] tracking-widest uppercase truncate">
                     {isStartAnchor ? t('startAnchor') : t('sectionN', { n: index })}
+                    <span className="ml-1.5 font-mono text-[var(--t4)] normal-case">{(point.timeSec ?? point.time).toFixed(3)}s</span>
                 </span>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1 shrink-0">
+                    {hasGreen && <span className="w-1.5 h-1.5 rounded-full bg-green-400" title={t('lineTypeGreen')} />}
+                    {hasRed && <span className="w-1.5 h-1.5 rounded-full bg-red-400" title={t('lineTypeRed')} />}
                     {!isStartAnchor && (
-                        <button
-                            onClick={() => onUpdate(point.id, 'sv', !(point.sv !== false))}
-                            className={`w-6 h-6 rounded-md border flex items-center justify-center transition-all shrink-0 ${point.sv !== false ? 'bg-green-500/20 border-green-500/50 text-green-400 hover:bg-green-500/30' : 'bg-[var(--chip2)] border-[var(--line2)] text-[var(--t4)] hover:border-[var(--t4)]'}`}
-                            title={point.sv !== false ? t('svToggleOnHint') : t('svToggleOffHint')}
-                        >
-                            {point.sv !== false ? <Check size={14} strokeWidth={3} /> : <X size={14} strokeWidth={3} />}
+                        <button onClick={() => onRemove(point.id)} className="text-[var(--t4)] hover:text-red-400 opacity-0 group-hover:opacity-100 transition p-0.5">
+                            <Trash2 size={13} />
                         </button>
                     )}
-                    {!isStartAnchor && (
-                        <input
-                            type="number" step="0.05" min="0" max="10"
-                            disabled={point.sv === false}
-                            placeholder={t('svRatePlaceholder')}
-                            value={point.svRate && point.svRate > 0 ? point.svRate : ''}
-                            onChange={(e) => onUpdate(point.id, 'svRate', e.target.value === '' ? 0 : parseFloat(e.target.value))}
-                            className="w-16 bg-[var(--bg)] border border-[var(--line2)] rounded-md px-2 py-1 text-xs font-mono text-center focus:outline-none focus:border-[var(--accent)] disabled:opacity-30"
-                            title={t('svRateHint')}
-                        />
-                    )}
-                    {!isStartAnchor && (
-                        <button onClick={() => onRemove(point.id)} className="text-[var(--t4)] hover:text-red-400 opacity-0 group-hover:opacity-100 transition p-1.5">
-                            <Trash2 size={16} />
-                        </button>
-                    )}
-                </div>
-            </div>
-            
-            <div className="grid grid-cols-2 gap-3">
-                <div>
-                    <label className="text-[10px] text-[var(--t4)] block mb-1 uppercase font-bold">{t('beatIndexLabel')}</label>
-                    <input 
-                        type="number" 
-                        disabled={isStartAnchor}
-                        value={beatStr}
-                        onChange={(e) => setBeatStr(e.target.value)}
-                        onBlur={handleBlurBeat}
-                        onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-                        className={`w-full bg-[var(--bg)] border border-[var(--line2)] rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-[var(--accent)] ${isStartAnchor ? 'text-[var(--t4)]' : 'text-[var(--t1)]'}`}
-                    />
-                </div>
-                <div>
-                    <label className="text-[10px] text-[var(--t4)] block mb-1 uppercase font-bold">{t('bpmLabel')}</label>
-                    <input 
-                        type="number" 
-                        step="0.01"
-                        value={bpmStr}
-                        onChange={(e) => setBpmStr(e.target.value)}
-                        onBlur={handleBlurBpm}
-                        onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-                        className="w-full bg-[var(--bg)] border border-[var(--line2)] rounded-lg px-3 py-2 text-sm text-[var(--accent2)] font-mono focus:outline-none focus:border-[var(--accent2)]"
-                    />
                 </div>
             </div>
 
-            {/* ★ v0.8.17：拍号（meter）—— 可读可改，参考 osu! 制谱器的拍号设置。
-                meter 语义 = 每小节几拍（分母固定为四分音符），如 4=4/4、3=3/4、7=7/4 */}
-            <div className="mt-3">
-                <label className="text-[10px] text-[var(--t4)] block mb-1 uppercase font-bold">{t('meterLabel')}</label>
-                <div className="flex items-center gap-1.5">
-                    <input
-                        type="number"
-                        step="1" min="1" max="7"
-                        value={meterStr}
-                        onChange={(e) => setMeterStr(e.target.value)}
-                        onBlur={handleBlurMeter}
-                        onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-                        title={t('meterHint')}
-                        className="w-full bg-[var(--bg)] border border-[var(--line2)] rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-[var(--accent)]"
-                    />
-                    <span className="text-[var(--t4)] font-mono text-sm shrink-0">/4</span>
+            {/* ★ 线型选择：红线改 BPM / 绿线改 SV / 默认两者都写且 SV=1 */}
+            <div className="flex gap-0.5 p-0.5 rounded-lg bg-[var(--bg)] border border-[var(--line2)] shrink-0" title={t('lineTypeHint')}>
+                {segBtn('both', t('lineTypeBoth'), 'bg-[var(--accent)]/25 text-[var(--accent)]')}
+                {segBtn('red', t('lineTypeRed'), 'bg-red-500/20 text-red-400')}
+                {segBtn('green', t('lineTypeGreen'), 'bg-green-500/20 text-green-400')}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 shrink-0">
+                <div>
+                    <label className={labelCls}>{t('bpmLabel')}</label>
+                    <input type="number" step="0.01" disabled={!hasRed} value={bpmStr}
+                        onChange={e => setBpmStr(e.target.value)} onBlur={blurBpm}
+                        onKeyDown={e => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+                        className={`${inputCls} text-[var(--accent2)]`} title={t('lineTypeRedHint')} />
+                </div>
+                <div>
+                    <label className={labelCls}>SV</label>
+                    <input type="number" step="0.05" min="0.01" max="20" disabled={!hasGreen} value={svStr}
+                        onChange={e => setSvStr(e.target.value)} onBlur={blurSv}
+                        onKeyDown={e => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+                        className={`${inputCls} text-green-400`} title={t('svRateHint')} />
                 </div>
             </div>
-            
-            <div className="mt-3 pt-3 border-t border-[var(--line)] flex justify-between items-center text-xs text-[var(--t4)] font-mono gap-2">
-                <span className="font-bold shrink-0">{t('startTimeLabel')}</span>
-                <div className="flex items-center gap-1.5">
-                    {/* 时间戳可直接编辑（秒）：起点锚点 = 全局 Offset，其余段按上一段 BPM 换算拍号 */}
-                    <input
-                        type="number" step="0.001" min="0"
-                        value={timeStr}
-                        onChange={(e) => setTimeStr(e.target.value)}
-                        onBlur={handleBlurTime}
-                        onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-                        className="w-24 bg-[var(--bg)] border border-[var(--line2)] rounded-md px-2 py-1 text-xs font-mono text-right text-[var(--accent)] focus:outline-none focus:border-[var(--accent)]"
-                        title={t('timeEditHint')}
-                    />
-                    <span className="text-[var(--t4)]">s</span>
+
+            <div className="grid grid-cols-2 gap-2 shrink-0">
+                <div>
+                    <label className={labelCls}>{t('beatIndexLabel')}</label>
+                    <input type="number" disabled={isStartAnchor} value={beatStr}
+                        onChange={e => setBeatStr(e.target.value)} onBlur={blurBeat}
+                        onKeyDown={e => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+                        className={inputCls} />
+                </div>
+                <div>
+                    <label className={labelCls}>{t('meterLabel')}</label>
+                    <div className="flex items-center gap-1">
+                        <input type="number" step="1" min="1" max="7" value={meterStr}
+                            onChange={e => setMeterStr(e.target.value)} onBlur={blurMeter}
+                            onKeyDown={e => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+                            className={inputCls} title={t('meterHint')} />
+                        <span className="text-[10px] text-[var(--t4)]">/4</span>
+                    </div>
+                </div>
+            </div>
+
+            <div className="flex justify-between items-center shrink-0 text-[10px] text-[var(--t4)] font-mono pt-0.5 border-t border-[var(--line)]">
+                <span className="font-bold">{t('startTimeLabel')}</span>
+                <div className="flex items-center gap-1">
+                    <input type="number" step="0.001" min="0" value={timeStr}
+                        onChange={e => setTimeStr(e.target.value)} onBlur={blurTime}
+                        onKeyDown={e => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+                        className="w-20 h-[24px] bg-[var(--bg)] border border-[var(--line2)] rounded-md px-1.5 text-[10px] font-mono text-right text-[var(--accent)] focus:outline-none focus:border-[var(--accent)]"
+                        title={t('timeEditHint')} />
+                    <span>s</span>
                 </div>
             </div>
         </div>
@@ -273,6 +225,24 @@ function App() {
   const [jumpIdx, setJumpIdx] = useState(''); // 段落跳转输入框
   const [showTopBtn, setShowTopBtn] = useState(false); // 变速段落区回到顶部悬浮球
   const sidebarScrollRef = useRef<HTMLDivElement>(null);
+  const [listScrollTop, setListScrollTop] = useState(0);
+  const [listHeight, setListHeight] = useState(600);
+  const orderedIdsRef = useRef<string[]>([]);
+
+  // ===== v0.9.0 外部谱面 / 实时写回 / 预览 =====
+  const [beatmap, setBeatmap] = useState<OsuDocument | null>(null);
+  const [beatmapEntries, setBeatmapEntries] = useState<{ name: string; path: string; text: string }[]>([]);
+  const [beatmapAudioPath, setBeatmapAudioPath] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  /** 预览是否已弹成「独立窗口」（可以拖到软件窗口外面） */
+  const [previewDetached, setPreviewDetached] = useState(false);
+  const [writeBack, setWriteBack] = useState(true);
+  const [writeConfirmed, setWriteConfirmed] = useState(false);
+  const [writeStatus, setWriteStatus] = useState<{ kind: 'idle' | 'ok' | 'error' | 'paused'; msg: string }>({ kind: 'idle', msg: '' });
+  const expectedMtimeRef = useRef(0);
+  const lastWrittenRef = useRef('');
+  const writeQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const writingRef = useRef(false);
 
   // ===== 制谱侧栏（osu-maphelper 独立窗口程序）启动状态 =====
   //   idle / launching / ok / error。原来这段逻辑在设置面板里，
@@ -298,13 +268,19 @@ function App() {
     }
   }, []);
 
-  // 点击频谱红色小节线 → 右侧面板滚动到对应段落并高亮
+  // 点击频谱红色小节线 → 右侧面板滚动到对应段落并高亮（虚拟列表按行号定位）
   const handleSectionClick = useCallback((id: string) => {
-    document.getElementById(`section-row-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const idx = orderedIdsRef.current.indexOf(id);
+    if (idx >= 0) {
+      const top = Math.max(0, idx * ROW_H - listHeight / 2 + ROW_H / 2);
+      sidebarScrollRef.current?.scrollTo({ top, behavior: 'smooth' });
+    } else {
+      document.getElementById(`section-row-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
     setFlashSectionId(id);
     if (flashTimerRef.current) window.clearTimeout(flashTimerRef.current);
     flashTimerRef.current = window.setTimeout(() => setFlashSectionId(null), 1600);
-  }, []);
+  }, [listHeight]);
 
   // ===== 应用设置（主题配色 / 背景底图 / 语言），localStorage 持久化 =====
   const [settings, setSettingsState] = useState<AppSettings>(() => {
@@ -339,20 +315,61 @@ function App() {
 
   // 音乐主音量（masterGain），所有音频源经此输出
   const masterGainRef = useRef<GainNode | null>(null);
+  /**
+   * 录制音频图：
+   *
+   *   masterGain ──┬──────────────→ audioContext.destination（扬声器）
+   *                └──→ recMix ──→ MediaStreamDestination（录制音轨）
+   *   节拍器(playClick 的 gain) ──┬→ destination（扬声器，永远出声）
+   *                              └→ clickRecGain(0/1) → recMix（可选）
+   *
+   * 为什么中间要有一层 recMix 而不是把 masterGain 直接接出去：
+   *   用户要能选「节拍器要不要录进视频」。若 masterGain 直连 Destination，节拍器就
+   *   只能二选一地"进/不进扬声器"；有了 recMix 这个总线，节拍器照常进扬声器，
+   *   同时经一个默认 0 的 clickRecGain 汇入录制——开关只改一个 gain 值，
+   *   录制端始终只有**一条音轨**（MediaRecorder 对多音轨支持很差，只认第一条）。
+   *
+   * 从 masterGain 取而不是 destination：取到的是**当前音量设置后**的信号
+   * （用户把音乐调小，录出来也跟着小，符合"录下你听到的"）。
+   */
+  const recDestRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const recMixRef = useRef<GainNode | null>(null);
+  /** 节拍器 → 录制总线 的开关增益（0 = 不录，1 = 录） */
+  const clickRecGainRef = useRef<GainNode | null>(null);
   if (!masterGainRef.current) {
     masterGainRef.current = audioContext.createGain();
     masterGainRef.current.connect(audioContext.destination);
     masterGainRef.current.gain.value = 1.0;
+    try {
+      const dest = audioContext.createMediaStreamDestination();
+      const mix = audioContext.createGain();
+      mix.gain.value = 1.0;
+      mix.connect(dest);
+      masterGainRef.current.connect(mix);
+      const click = audioContext.createGain();
+      click.gain.value = 0; // 默认不录节拍器，由 settings.recordMetronome 同步
+      click.connect(mix);
+      recDestRef.current = dest;
+      recMixRef.current = mix;
+      clickRecGainRef.current = click;
+    } catch { /* 老浏览器不支持：录制就只有画面 */ }
   }
+  /** 给预览组件用：返回录制音频流（同一份，永久复用） */
+  const getRecordAudioStream = useCallback(() => recDestRef.current?.stream ?? null, []);
   // 挂载/音量变化时同步到实际设置值（平滑过渡防爆音）
   useEffect(() => {
     const g = masterGainRef.current;
     if (g) g.gain.setTargetAtTime(settings.musicVolume, audioContext.currentTime, 0.02);
   }, [settings.musicVolume, audioContext]);
+  /** 节拍器入录开关：只改汇入录制总线的量，扬声器支路不受影响 */
+  useEffect(() => {
+    const g = clickRecGainRef.current;
+    if (g) g.gain.setTargetAtTime(settings.recordMetronome ? 1 : 0, audioContext.currentTime, 0.01);
+  }, [settings.recordMetronome, audioContext]);
   
   const [globalOffset, setGlobalOffset] = useState(0);
   const [rawPoints, setRawPoints] = useState<Omit<TimingPoint, 'time'>[]>([
-      { id: 'initial', beatIndex: 0, bpm: 120, sv: true }
+      { id: 'initial', beatIndex: 0, bpm: 120, sv: true, svRate: 1, lineType: 'both' }
   ]);
 
   // ===== 撤销 / 重做历史（Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z）=====
@@ -419,6 +436,19 @@ function App() {
   const [playbackRate, setPlaybackRate] = useState(1.0);
   const playbackRateRef = useRef(1.0);
   const playheadRef = useRef(0); // 播放头位置（秒）：每帧更新，供 Visualizer 独立播放头层实时读取（不经过 React 渲染）
+  /** isPlaying 的同步镜像：预览发来的「录制起点」命令要在一个事件里判断当前是否在播，
+   *  读 state 会拿到上一次渲染的旧值（同一个 tick 内 setState 还没生效）。 */
+  const isPlayingRef = useRef(false);
+  isPlayingRef.current = isPlaying;
+  // 预览小窗用稳定引用：App 播放时每 100ms 重渲染一次，内联箭头函数会让 memo 失效、
+  // 连带预览组件一起重渲染（频谱换区域时表现为「卡顿一下」）。
+  const getPreviewPlayheadTime = useCallback(() => playheadRef.current, []);
+  const closePreview = useCallback(() => {
+    setPreviewOpen(false);
+    // 独立窗口也要一起关，否则它会在没有谱面的状态下继续挂着
+    setPreviewDetached(false);
+    (window as any).electronAPI?.closePreviewWindow?.();
+  }, []);
   
   // ★ v0.8.19：这里必须 useMemo。
   //   recalculateTiming 每次调用都返回新数组，而播放时 currentTime 每 100ms 触发一次 App 重渲染，
@@ -493,8 +523,8 @@ function App() {
     }
   }, [jumpIdx, timingPoints, handleSectionClick]);
 
-  // ===== 播放核心（对照原源码恢复：AudioBufferSourceNode + 墙钟公式）=====
-  const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
+  // ===== 播放核心（变速不变调：soundtouchjs PitchShifter + 墙钟公式）=====
+  const sourceNodeRef = useRef<StretchHandle | null>(null);
   const startTimeRef = useRef<number>(0);   // 播放开始的墙钟时间
   const startOffsetRef = useRef<number>(0); // 播放开始的内容偏移
   const rafRef = useRef<number | null>(null);
@@ -543,12 +573,14 @@ function App() {
             bpm: last.bpm, // 暂时继承前一条红线的 BPM
             meter: last.meter ?? 4, // ★ v0.8.17：继承上一段的拍号（默认 4/4）
             sv: true,
+            svRate: 1,        // ★ 默认 SV = 1（正常流速）
+            lineType: 'both', // ★ 默认同时写红线 + 绿线
             timeSec: newTime,
         }];
     });
   }, [timingPoints]);
 
-  const handleUpdatePoint = useCallback((id: string, field: 'bpm' | 'beatIndex' | 'sv' | 'svRate' | 'meter', value: number | boolean) => {
+  const handleUpdatePoint = useCallback((id: string, field: 'bpm' | 'beatIndex' | 'sv' | 'svRate' | 'meter' | 'lineType', value: number | boolean | LineType) => {
       const idx = timingPoints.findIndex(tp => tp.id === id);
       const cur = idx >= 0 ? timingPoints[idx] : null;
       // 改 BPM 时：把「下一条红线」的当前位置固化成绝对时间 → 这次 BPM 变化不会挪动它
@@ -559,12 +591,17 @@ function App() {
           }
           if (p.id !== id) return p;
           if (p.beatIndex === 0 && field === 'beatIndex') return p;
-          // 绿线倍速：空/0/非法值 → 存 0（导出时按自动计算）
+          // 绿线倍速 SV：空/0/非法值 → 1（正常流速）
           if (field === 'svRate') {
-              const r = typeof value === 'number' && isFinite(value) && value > 0 ? Math.round(value * 100) / 100 : 0;
-              return { ...p, svRate: r };
+              const r = typeof value === 'number' && isFinite(value) && value > 0 ? Math.round(value * 1000) / 1000 : 1;
+              return { ...p, svRate: r, sv: true };
           }
-          // 绿线开关
+          // 卡片线型：红线改 BPM / 绿线改 SV / 两者都写
+          if (field === 'lineType') {
+              const lt = value as LineType;
+              return { ...p, lineType: lt, sv: lt !== 'red', svRate: p.svRate && p.svRate > 0 ? p.svRate : 1 };
+          }
+          // 绿线开关（兼容旧配置）
           if (field === 'sv') {
               return { ...p, sv: value as boolean };
           }
@@ -661,7 +698,7 @@ function App() {
         const peaks = extractPeaks(decodedBuffer);
         setAudioData({ buffer: decodedBuffer, peaks, duration: decodedBuffer.duration });
         setGlobalOffset(0.1);
-        setRawPoints([{ id: 'initial', beatIndex: 0, bpm: 120, sv: true }]);
+        setRawPoints([{ id: 'initial', beatIndex: 0, bpm: 120, sv: true, svRate: 1, lineType: 'both' }]);
         currentTimeRef.current = 0;
         playheadRef.current = 0;
         setCurrentTime(0);
@@ -682,6 +719,136 @@ function App() {
     }
   };
 
+  // ===== 外部谱面导入（.osu / .osz，绝不读取游戏进程）=====
+  const applyBeatmapEntry = useCallback(async (entry: { name: string; path: string; text: string }) => {
+      const doc = parseOsuDocument(entry.text, entry.path, entry.name);
+      if (!doc) { alert(t('invalidBeatmap')); return; }
+      const { offset, points } = docToPoints(doc);
+      setBeatmap(doc);
+      setGlobalOffset(offset);
+      setRawPoints(points as Omit<TimingPoint, 'time'>[]);
+      // 以「从卡片重建一次」的结果作为基线：导入本身不触发写回
+      lastWrittenRef.current = patchOsuDocument(doc, points as PatchPoint[]);
+      const a = (window as any).electronAPI;
+      const st = a?.statFile ? await a.statFile(entry.path) : null;
+      expectedMtimeRef.current = st?.mtimeMs ?? 0;
+      setWriteStatus({ kind: 'idle', msg: t('beatmapImported', { keys: doc.keyCount, lines: doc.timing.length }) });
+      setPreviewOpen(true);
+  }, []);
+
+  const handleImportBeatmap = useCallback(async () => {
+      const a = (window as any).electronAPI;
+      if (!a?.openBeatmap) { alert(t('onlyElectron')); return; }
+      const r = await a.openBeatmap();
+      if (!r) return;
+      if (r.error) { alert(r.error); return; }
+      if (!r.entries?.length) { alert(t('invalidBeatmap')); return; }
+      setBeatmapEntries(r.entries);
+      setBeatmapAudioPath(r.audioPath || null);
+      // 同目录/同包里的音频顺手载入，方便「跟随播放头」预览（音频同样来自外部文件）
+      if (r.audioPath) await handleFileUpload(null, r.audioPath);
+      await applyBeatmapEntry(r.entries[0]);
+      if (r.fromOsz) setWriteStatus({ kind: 'idle', msg: t('oszWorkCopy') });
+      if (!writeBackConfirmedOnce) {
+          writeBackConfirmedOnce = true;
+          const ok = window.confirm(t('writeBackConfirm'));
+          setWriteConfirmed(ok);
+          setWriteBack(ok);
+      }
+  }, [applyBeatmapEntry, handleFileUpload]);
+
+  const handleSwitchDifficulty = useCallback(async (name: string) => {
+      const entry = beatmapEntries.find(e => e.name === name);
+      if (entry) await applyBeatmapEntry(entry);
+  }, [beatmapEntries, applyBeatmapEntry]);
+
+  /** 把当前 timing 另存成一份可直接拖进 osu! 的 .osu（.osz 的工作副本尤其需要这一步） */
+  const handleSaveBeatmapAs = useCallback(async () => {
+      if (!beatmap) return;
+      const a = (window as any).electronAPI;
+      const content = patchOsuDocument(beatmap, rawPoints as PatchPoint[]);
+      const name = beatmap.displayName.replace(/\.osu$/i, '') + '-timing.osu';
+      if (a?.saveFile) {
+          const p = await a.saveFile({
+              defaultPath: name,
+              filters: [{ name: 'osu! Beatmap', extensions: ['osu'] }],
+              content
+          });
+          if (p) setWriteStatus({ kind: 'ok', msg: t('savedAs', { path: p }) });
+      } else {
+          const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const el = document.createElement('a');
+          el.href = url; el.download = name; el.click();
+          URL.revokeObjectURL(url);
+      }
+  }, [beatmap, rawPoints]);
+
+  const handleRestoreBackup = useCallback(async () => {
+      const a = (window as any).electronAPI;
+      if (!a?.listOsuBackups || !beatmap) return;
+      const list = await a.listOsuBackups();
+      if (!list?.length) { alert(t('noBackup')); return; }
+      if (!window.confirm(t('restoreConfirm', { name: list[0].name }))) return;
+      const r = await a.restoreOsuBackup({ backup: list[0].path, target: beatmap.sourcePath });
+      if (r?.ok) {
+          setWriteBack(false);
+          setWriteStatus({ kind: 'paused', msg: t('restored') });
+          const text = await a.readTextFile(beatmap.sourcePath);
+          if (text) await applyBeatmapEntry({ name: beatmap.displayName, path: beatmap.sourcePath, text });
+      } else alert(r?.error || '恢复失败');
+  }, [beatmap, applyBeatmapEntry]);
+
+  // ===== 实时写回：改 SV → 60ms 防抖 → 串行原子写；预览走内存，不等落盘 =====
+  useEffect(() => {
+      if (!beatmap || !writeBack || !writeConfirmed) return;
+      const doc = beatmap;
+      let content = '';
+      try { content = patchOsuDocument(doc, rawPoints as PatchPoint[]); }
+      catch (e) { setWriteStatus({ kind: 'error', msg: String(e) }); return; }
+      if (content === lastWrittenRef.current) return;
+      // 安全闸：除 [TimingPoints] 外有任何一行变了，直接拒绝落盘
+      if (!verifyTimingOnlyChange(doc.text, content)) {
+          setWriteStatus({ kind: 'error', msg: '安全校验失败：非 TimingPoints 段被改动，已阻止写回' });
+          setWriteBack(false);
+          return;
+      }
+      const timer = window.setTimeout(() => {
+          writeQueueRef.current = writeQueueRef.current.then(async () => {
+              const a = (window as any).electronAPI;
+              if (!a?.writeOsuAtomic) return;
+              const st = await a.statFile(doc.sourcePath);
+              if (st && expectedMtimeRef.current && Math.abs(st.mtimeMs - expectedMtimeRef.current) > 5) {
+                  setWriteStatus({ kind: 'error', msg: t('externalChange') });
+                  setWriteBack(false); // 文件被外部改动 → 自动暂停，绝不覆盖别人的修改
+                  return;
+              }
+              writingRef.current = true;
+              const r = await a.writeOsuAtomic({ path: doc.sourcePath, content, backup: true });
+              writingRef.current = false;
+              if (r?.ok) {
+                  expectedMtimeRef.current = r.mtimeMs || 0;
+                  lastWrittenRef.current = content;
+                  setWriteStatus({ kind: 'ok', msg: t('writeBackOk', { name: doc.displayName }) });
+              } else {
+                  setWriteStatus({ kind: 'error', msg: r?.error || '写回失败' });
+              }
+          }).catch(e => { writingRef.current = false; setWriteStatus({ kind: 'error', msg: String(e) }); });
+      }, 60);
+      return () => window.clearTimeout(timer);
+  }, [rawPoints, globalOffset, beatmap, writeBack, writeConfirmed]);
+
+  // 虚拟列表容器高度（ResizeObserver，不随播放头更新）
+  useEffect(() => {
+      const el = sidebarScrollRef.current;
+      if (!el) return;
+      const update = () => setListHeight(el.clientHeight);
+      update();
+      const ro = new ResizeObserver(update);
+      ro.observe(el);
+      return () => ro.disconnect();
+  }, []);
+
   // 命令行 `--open-audio=<路径>`（把音频文件拖到 exe 图标上 / 资源管理器「打开方式」）→ 启动后自动载入
   // 用 ref 转发，避免把 handleFileUpload 写进依赖导致监听器反复重建
   const loadAudioRef = useRef(handleFileUpload);
@@ -698,7 +865,12 @@ function App() {
           version: "1.0",
           offset: globalOffset,
           // timeSec = 红线绝对时间（秒）：带上它，重新导入后红线位置/独立关系（改 BPM 不挪动）100% 保留
-          points: rawPoints.map(p => ({ beatIndex: p.beatIndex, bpm: p.bpm, meter: p.meter ?? 4, sv: p.sv !== false, svRate: p.svRate, timeSec: p.timeSec }))
+          points: rawPoints.map(p => ({
+              beatIndex: p.beatIndex, bpm: p.bpm, meter: p.meter ?? 4,
+              sv: p.sv !== false, svRate: p.svRate && p.svRate > 0 ? p.svRate : 1,
+              lineType: p.lineType ?? (p.sv === false ? 'red' : 'both'),
+              timeSec: p.timeSec
+          }))
       };
       const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -719,14 +891,18 @@ function App() {
               // 统一解析：支持软件 json / osu! 谱面 / Malody .mc / Arcaea .aff / 通用 txt
               const cfg = parseTimingFile(text, file.name);
               if (cfg && cfg.points.length > 0) {
+                  // 导入的是「另一份配置」→ 断开与当前 .osu 的写回关系，避免误覆盖谱面
+                  setBeatmap(null);
+                  setPreviewOpen(false);
                   setGlobalOffset(cfg.offset);
                   setRawPoints(cfg.points.map(p => ({
                       id: crypto.randomUUID(),
                       beatIndex: p.beatIndex,
                       bpm: p.bpm,
                       meter: typeof p.meter === 'number' && p.meter > 0 ? p.meter : 4, // ★ v0.8.17：读回拍号
-                      sv: p.sv !== false, // 默认开启绿线
-                      svRate: p.svRate && p.svRate > 0 ? p.svRate : 0,
+                      sv: p.sv !== false,
+                      svRate: p.svRate && p.svRate > 0 ? p.svRate : 1, // ★ 默认 SV = 1
+                      lineType: p.lineType ?? (p.sv === false ? 'red' : 'both'),
                       timeSec: typeof p.timeSec === 'number' && isFinite(p.timeSec) ? p.timeSec : undefined, // 红线绝对时间
                   })));
               } else {
@@ -895,7 +1071,7 @@ function App() {
   };
 
   const stop = useCallback(() => {
-    if (sourceNodeRef.current) { try { sourceNodeRef.current.stop(); } catch(e) {} sourceNodeRef.current = null; }
+    if (sourceNodeRef.current) { sourceNodeRef.current.stop(); sourceNodeRef.current = null; }
     setIsPlaying(false);
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
   }, []);
@@ -912,19 +1088,24 @@ function App() {
    */
   const startSourceAt = useCallback((t: number) => {
     if (!audioData) return;
-    if (sourceNodeRef.current) { try { sourceNodeRef.current.stop(); } catch(e) {} }
+    if (sourceNodeRef.current) { sourceNodeRef.current.stop(); sourceNodeRef.current = null; }
     const offset = Math.max(0, Math.min(audioData.duration, t));
-    const source = audioContext.createBufferSource();
-    source.buffer = audioData.buffer;
-    source.connect(masterGainRef.current || audioContext.destination);
-    source.playbackRate.value = playbackRateRef.current; // 变速（原生变速，音调随倍速变化）
-    source.start(0, offset);
-    sourceNodeRef.current = source;
+    // 变速不变调：用 soundtouchjs PitchShifter（tempo = 倍速，音高不变）。
+    // 播完自动触发 onEnd → 走和「newTime >= duration」相同的收尾（stop + 播放头归位）。
+    const handle = createStretchPlayer(
+      audioContext,
+      audioData.buffer,
+      playbackRateRef.current,
+      masterGainRef.current || audioContext.destination,
+      offset,
+      () => { if (sourceNodeRef.current === handle) stop(); },
+    );
+    sourceNodeRef.current = handle;
     startTimeRef.current = audioContext.currentTime;
     startOffsetRef.current = offset;
     playheadRef.current = offset; // 播放头立即跳到新位置
     lastScheduledIndexRef.current = -Infinity; // 新位置：下一帧从当地拍子重新调度节拍器
-  }, [audioData, audioContext]);
+  }, [audioData, audioContext, stop]);
 
   const play = useCallback(async () => {
     if (!audioData) return;
@@ -942,7 +1123,10 @@ function App() {
     const sound = getMetronomeSound(settings.metronomeSound);
     const osc = audioContext.createOscillator();
     const gain = audioContext.createGain();
-    osc.connect(gain); gain.connect(audioContext.destination);
+    osc.connect(gain);
+    gain.connect(audioContext.destination);        // 扬声器：永远出声（打拍子用的）
+    // 录制总线：默认 gain=0（不录），用户在预览工具条上打开「节拍器入录」才听得见
+    if (clickRecGainRef.current) gain.connect(clickRecGainRef.current);
     osc.type = sound.type;
     osc.frequency.value = isDownbeat ? sound.freqMain : sound.freqAlt;
     const startTime = Math.max(audioContext.currentTime, time);
@@ -1031,6 +1215,21 @@ function App() {
   }, [isPlaying, audioContext, audioData, stop, isMetronomeOn, timingPoints, playClick, settings.beatLineDelayMs]);
 
   /**
+   * 把频谱视口翻到 t 秒处（目标不在视口内才翻，播放头落在左侧 10%，与自动跟随一致）。
+   * 抽出来是因为「定位」和「录制起点」两处都要用，且都不该连带改播放状态。
+   */
+  const scrollViewToTime = useCallback((t: number) => {
+    setViewState(v => {
+        const maxScroll = Math.max(0, (audioData?.duration || 0) * v.zoom - containerWidth);
+        const targetX = t * v.zoom;
+        if (targetX < v.scrollLeft || targetX > v.scrollLeft + containerWidth) {
+            return { ...v, scrollLeft: Math.max(0, Math.min(targetX - containerWidth * FOLLOW_LEAD_RATIO, maxScroll)) };
+        }
+        return v;
+    });
+  }, [audioData, containerWidth]);
+
+  /**
    * 跳转到 t 秒。
    * ★ v0.8.21 修 bug：**播放中点击频谱 / 白条 / 总览条 → 停在该位置**（原来会"无缝续播"，
    *   而 stop()+play() 被批处理掉之后播放头反而冻死）。
@@ -1045,16 +1244,166 @@ function App() {
       if (opts?.keepPlaying) startSourceAt(t); // 换声源，播放循环不重建（播放头继续跟手）
       else stop();                            // 停下，就停在点击的位置
     }
-    // 频谱视图：目标位置在视口外时把视口翻过去（播放头落在左侧 10%，与自动跟随一致）
-    setViewState(v => {
-        const maxScroll = Math.max(0, (audioData?.duration || 0) * v.zoom - containerWidth);
-        const targetX = t * v.zoom;
-        if (targetX < v.scrollLeft || targetX > v.scrollLeft + containerWidth) {
-            return { ...v, scrollLeft: Math.max(0, Math.min(targetX - containerWidth * FOLLOW_LEAD_RATIO, maxScroll)) };
-        }
-        return v;
+    scrollViewToTime(t);
+  }, [audioData, scrollViewToTime, stop, startSourceAt]);
+
+  // ============================================================================
+  // 谱面预览：帧率设置 / 独立窗口 / 播放控制命令
+  // ============================================================================
+  /** 预览帧率（设置面板里配）：identity 稳定，避免预览每帧重渲染 */
+  const previewFps = useMemo(
+    () => ({ vsync: settings.previewVsync, limit: settings.previewFpsLimit }),
+    [settings.previewVsync, settings.previewFpsLimit]
+  );
+  /** 录制参数（推给独立窗口：它自己读不到设置对象的实时值） */
+  const previewRec = useMemo(
+    () => ({ height: settings.recHeight, fps: settings.recFps, kbps: settings.recKbps }),
+    [settings.recHeight, settings.recFps, settings.recKbps]
+  );
+
+  /** 预览里发来的播放控制（录制时"点一下就从当前进度自动开播"走这条） */
+  const previewCommand = useCallback((cmd: PreviewCommand) => {
+    if (cmd.type === 'play') void play();
+    else if (cmd.type === 'pause') stop();
+    else if (cmd.type === 'seek') handleSeek(cmd.t);
+    else if (cmd.type === 'recordFrom') {
+      /* ★ 录制起点：改位置 + 保证在播，一步到位。
+       *
+       *   绝对不能在同一个事件里 seek 再 play：handleSeek 会 stop()，而 stop() 取消了
+       *   播放循环的 rAF；随后 play() 又把 isPlaying 设回 true —— 两次 setState 被 React
+       *   折叠成"一直是 true"，播放循环的 effect 不重建 → 声音在放、播放头冻死。
+       *   （这就是「播放中按录制，小窗画面卡住不动」的成因。）
+       *
+       *   这里直接分两种情形处理，全程不碰 isPlaying：
+       *     - 正在播放：位置变了就换声源续播，循环继续跑
+       *     - 暂停中：play() 会从 currentTimeRef（刚写好的 t）起播
+       */
+      const dur = audioData?.duration || 0;
+      const t = Math.max(0, Math.min(dur, cmd.t));
+      const moved = Math.abs(t - playheadRef.current) > 0.0005;
+      currentTimeRef.current = t;
+      playheadRef.current = t;
+      setCurrentTime(t);
+      if (moved) scrollViewToTime(t);
+      if (isPlayingRef.current) {
+        if (moved) startSourceAt(t); // 原地开始录制时不动声音（重起会有一声断音）
+      } else {
+        void play();
+      }
+    }
+  }, [play, stop, handleSeek, audioData, scrollViewToTime, startSourceAt]);
+
+  /**
+   * 预览开始/结束录制 → 临时关掉频谱的「跟随播放头」。
+   * 录制期间视口跟着播放头一路翻页，既晃眼又白吃性能（翻页那一帧本来就重），
+   * 而录的是小窗画面，停不停根本不进视频。录完恢复用户原来的选择。
+   */
+  const followBeforeRecRef = useRef(true);
+  const handlePreviewRecording = useCallback((on: boolean) => {
+    if (on) {
+      followBeforeRecRef.current = followRef.current;
+      if (followRef.current) setFollowPlayhead(false);
+    } else if (followBeforeRecRef.current) {
+      setFollowPlayhead(true);
+    }
+  }, []);
+
+  /** 预览工具条上切换「节拍器入录」（独立窗口里改的也会经通道传回来写进设置） */
+  const handleRecordMetronomeChange = useCallback((v: boolean) => {
+    setSettingsState(prev => {
+      if (prev.recordMetronome === v) return prev;
+      const next = { ...prev, recordMetronome: v };
+      saveSettings(next);
+      return next;
     });
-  }, [audioData, containerWidth, stop, startSourceAt]);
+  }, []);
+
+  /** 把预览弹成独立窗口（真正的 OS 窗口，能拖到软件窗口外面） */
+  const openDetachedPreview = useCallback(async () => {
+    const api = (window as any).electronAPI;
+    if (!api?.openPreviewWindow) return;
+    let saved: { x?: number; y?: number; w?: number; h?: number } | undefined;
+    try {
+      const b = JSON.parse(localStorage.getItem('bpm.preview.detach.win.v1') || 'null');
+      if (b && Number.isFinite(b.w) && Number.isFinite(b.h)) saved = b;
+    } catch { /* 没存过就用默认位置 */ }
+    const r = await api.openPreviewWindow(saved);
+    if (r?.ok) setPreviewDetached(true);
+    else if (r?.error) console.warn('[preview] 独立窗口打开失败:', r.error);
+  }, []);
+
+  const closeDetachedPreview = useCallback(() => {
+    (window as any).electronAPI?.closePreviewWindow?.();
+    setPreviewDetached(false);
+  }, []);
+
+  // 谱面被换掉/关掉预览 → 独立窗口不能留在那儿空转
+  useEffect(() => {
+    if (previewDetached && (!beatmap || !previewOpen)) closeDetachedPreview();
+  }, [previewDetached, beatmap, previewOpen, closeDetachedPreview]);
+
+  // 独立窗口被用户直接关掉（标题栏 ×/Alt+F4）→ 恢复内嵌小窗
+  useEffect(() => {
+    const api = (window as any).electronAPI;
+    const off = api?.onPreviewWindowClosed?.(() => setPreviewDetached(false));
+    return () => { if (typeof off === 'function') off(); };
+  }, []);
+
+  /**
+   * 主窗口 ⇄ 独立窗口 数据桥（BroadcastChannel）。
+   * - init：谱面 + timing 卡片 + 帧率（换谱面/改设置时重发；独立窗口打开后也会主动要一次）
+   * - tick：播放头，60Hz 推一次（暂停时只推变化，避免空转）
+   * - cmd：独立窗口里点录制 → 让主窗口从当前进度开播
+   */
+  useEffect(() => {
+    if (!previewDetached || !beatmap) return;
+    let ch: BroadcastChannel;
+    try { ch = new BroadcastChannel(PREVIEW_CHANNEL); } catch { return; }
+    const sendInit = () => ch.postMessage({
+      type: 'init', doc: beatmap, points: rawPoints as PatchPoint[], fps: previewFps,
+      rec: previewRec, recMetronome: settings.recordMetronome,
+      playing: isPlayingRef.current,
+      audioMs: audioData ? Math.round(audioData.duration * 1000) : undefined,
+      t: playheadRef.current,
+    });
+    ch.onmessage = (ev: MessageEvent) => {
+      const m = ev.data;
+      if (!m) return;
+      if (m.type === 'ready') sendInit();
+      else if (m.type === 'cmd' && m.cmd) previewCommand(m.cmd);
+      else if (m.type === 'recording') handlePreviewRecording(!!m.on);
+      else if (m.type === 'setting' && typeof m.recMetronome === 'boolean') handleRecordMetronomeChange(m.recMetronome);
+    };
+    sendInit();
+    // 播放头按主窗口的帧节奏推给独立窗口（原来用 setInterval 16ms，天然把独立窗口顶死在 ~62fps）。
+    // 现在跟 rAF 走、最短 7ms 一次：120Hz 屏上基本每帧都有新值，配合预览端的播放头平滑，
+    // 独立窗口也能跑满刷新率。消息体只有一个数字，跨进程开销可以忽略。
+    let lastT = -1;
+    let lastPost = 0;
+    let tickRaf = 0;
+    let lastPlaying = isPlayingRef.current;
+    const tickLoop = () => {
+      const now = performance.now();
+      // 播放/暂停一变就单独通知一次：独立窗口靠它让显示时钟"精确停住"
+      // （只靠"播放头不动"判断永远差一个量化台阶 ≈11ms，暂停瞬间会看到画面继续落一下再跳回）
+      if (isPlayingRef.current !== lastPlaying) {
+        lastPlaying = isPlayingRef.current;
+        ch.postMessage({ type: 'state', playing: lastPlaying });
+      }
+      if (now - lastPost >= 7) {
+        const t = playheadRef.current;
+        if (Math.abs(t - lastT) >= 0.0005) {
+          lastT = t;
+          lastPost = now;
+          ch.postMessage({ type: 'tick', t });
+        }
+      }
+      tickRaf = requestAnimationFrame(tickLoop);
+    };
+    tickRaf = requestAnimationFrame(tickLoop);
+    return () => { if (tickRaf) cancelAnimationFrame(tickRaf); ch.close(); };
+  }, [previewDetached, beatmap, rawPoints, previewFps, previewRec, previewCommand,
+      settings.recordMetronome, handlePreviewRecording, handleRecordMetronomeChange, audioData]);
 
   /**
    * ★ v0.8.20：用户主动移动视口（拖拽平移 / 滚轮滚动）时关闭自动跟随。
@@ -1066,7 +1415,7 @@ function App() {
       setViewState(v => (v.scrollLeft === sl ? v : { ...v, scrollLeft: sl }));
   }, []);
 
-  // 调整播放倍速（0.25x - 2.0x）：原生 playbackRate 实时变速（变调），不打断播放
+  // 调整播放倍速（0.25x - 2.0x）：soundtouchjs tempo 实时变速（不变调），不打断播放
   const handleRateChange = useCallback((rate: number) => {
       const clamped = Math.max(0.25, Math.min(2.0, rate));
       if (Math.abs(clamped - playbackRateRef.current) < 0.001) return; // 无变化直接返回
@@ -1078,7 +1427,7 @@ function App() {
           const now = audioContext.currentTime;
           startOffsetRef.current = currentTimeRef.current;
           startTimeRef.current = now;
-          sourceNodeRef.current.playbackRate.value = clamped; // 实时生效
+          sourceNodeRef.current.setRate(clamped); // 实时生效（tempo：变速不变调）
           lastScheduledIndexRef.current = -Infinity; // 重置节拍调度，下一帧从当前拍重新调度
       }
   }, [audioContext]);
@@ -1182,28 +1531,32 @@ function App() {
   }, [togglePlay, undo, redo, handleFileUpload, handleExportJson, handleSeek, zoomBy, stepSection]);
 
   /**
-   * ★ v0.8.19：变速段落卡片列表必须缓存。
-   *   导入 .osu 后可能有 **几百条红线**（本机测试谱 700+ 条），而播放时 currentTime 每 100ms
-   *   触发一次 App 重渲染。旧写法在 JSX 里直接 [...timingPoints].reverse().map(...)，
-   *   每次渲染都生成全新元素 → 几百张卡片全部重渲染，每秒 10 轮，主线程直接被填满。
-   *   用 useMemo 缓存元素后，React 拿到的是同一批元素对象，会整棵子树跳过，播放期间零成本。
+   * ★ v0.9.0：虚拟滚动。带 SV 的谱面实测有 2982 条 timing 行，
+   *   若全部渲染就是 ~3 万个 DOM 节点，播放时每秒 10 次重渲染必然卡死。
+   *   固定行高 + 只渲染视口 ±3 张 → 任何谱面都只有 ~15 张卡片在 DOM 里。
    */
-  const timingRows = useMemo(() => [...timingPoints].reverse().map((point, revIdx) => {
-      const originalIdx = timingPoints.length - 1 - revIdx;
+  const orderedPoints = useMemo(() => [...timingPoints].reverse(), [timingPoints]);
+  orderedIdsRef.current = orderedPoints.map(p => p.id);
+  const visibleStart = Math.max(0, Math.floor(listScrollTop / ROW_H) - 3);
+  const visibleEnd = Math.min(orderedPoints.length, Math.ceil((listScrollTop + listHeight) / ROW_H) + 3);
+  const timingRows = useMemo(() => orderedPoints.slice(visibleStart, visibleEnd).map((point, i) => {
+      const revIdx = visibleStart + i;
       return (
-          <TimingRow
-              key={point.id}
-              point={point}
-              index={originalIdx}
-              totalCount={timingPoints.length}
-              onUpdate={handleUpdatePoint}
-              onRemove={handleRemovePoint}
-              onUpdateTime={handleUpdatePointTime}
-              onJumpToTime={handleJumpToTimeline}
-              flash={flashSectionId === point.id}
-          />
+          <div key={point.id} style={{ position: 'absolute', top: revIdx * ROW_H, left: 0, right: 0, height: ROW_H }}>
+              <TimingRow
+                  point={point}
+                  index={timingPoints.length - 1 - revIdx}
+                  totalCount={timingPoints.length}
+                  onUpdate={handleUpdatePoint}
+                  onRemove={handleRemovePoint}
+                  onUpdateTime={handleUpdatePointTime}
+                  onJumpToTime={handleJumpToTimeline}
+                  flash={flashSectionId === point.id}
+                  height={ROW_H - 16}
+              />
+          </div>
       );
-  }), [timingPoints, handleUpdatePoint, handleRemovePoint, handleUpdatePointTime, handleJumpToTimeline, flashSectionId]);
+  }), [orderedPoints, visibleStart, visibleEnd, timingPoints.length, handleUpdatePoint, handleRemovePoint, handleUpdatePointTime, handleJumpToTimeline, flashSectionId]);
 
   return (
     <div className="relative flex h-screen w-screen text-[var(--t1)] font-sans overflow-hidden" style={{
@@ -1225,10 +1578,10 @@ function App() {
     } as React.CSSProperties}>
       <div className="flex-1 flex flex-col min-w-0 h-full relative z-10">
         <header className="h-16 bg-[var(--panel)] border-b border-[var(--line)] flex items-center justify-between px-6 z-30 shrink-0 shadow-2xl">
-            <div className="flex items-center gap-6">
+            <div className="flex items-center gap-2 min-w-0 overflow-x-auto">
                 {/* 左上角：导入音频（原「♪ BPM 测速助手」标题已按需求删除，导入按钮上移到这个位置） */}
                 <label
-                    className={`flex items-center gap-2 px-4 py-2 bg-[var(--accent)] rounded-lg transition text-sm font-black uppercase tracking-widest shadow-lg ${importing ? 'opacity-70 cursor-wait' : 'cursor-pointer active:scale-95'}`}
+                    className={`shrink-0 whitespace-nowrap flex items-center gap-2 px-4 py-2 bg-[var(--accent)] rounded-lg transition text-sm font-black uppercase tracking-widest shadow-lg ${importing ? 'opacity-70 cursor-wait' : 'cursor-pointer active:scale-95'}`}
                     title={importing ? t('decoding') : t('importAudio')}
                 >
                     {importing
@@ -1242,12 +1595,30 @@ function App() {
                     onClick={launchSidebar}
                     disabled={mhState === 'launching'}
                     title={mhMsg || '启动 osu! 制谱侧栏（启动后本软件会自动收起；在侧栏点「返回测速」即可回到软件并关闭侧栏）'}
-                    className="flex items-center gap-2 px-4 py-2 bg-[var(--chip2)] hover:bg-[var(--chip)] border border-[var(--accent)]/40 text-[var(--accent)] rounded-lg cursor-pointer transition text-sm font-black uppercase tracking-widest shadow-lg active:scale-95 disabled:opacity-50"
+                    className="shrink-0 whitespace-nowrap flex items-center gap-2 px-3 py-2 bg-[var(--chip2)] hover:bg-[var(--chip)] border border-[var(--accent)]/40 text-[var(--accent)] rounded-lg cursor-pointer transition text-xs font-black uppercase tracking-wider shadow-lg active:scale-95 disabled:opacity-50"
                 >
                     <PanelRightOpen size={18} />
                     <span>{mhState === 'launching' ? t('launching') : t('mapHelper')}</span>
                 </button>
-                {fileName && <span className="text-xs text-[var(--t4)] truncate max-w-[200px] font-mono bg-[var(--chip2)] px-3 py-1 rounded-full border border-[var(--line2)]">{fileName}</span>}
+                {/* v0.9.0：外部谱面导入 + 实时变速预览 */}
+                <button onClick={handleImportBeatmap}
+                    title={t('importBeatmapHint')}
+                    className="shrink-0 whitespace-nowrap flex items-center gap-1.5 px-2 py-1.5 bg-[var(--chip2)] hover:bg-[var(--chip)] border border-[var(--accent)]/40 text-[var(--accent)] rounded-lg cursor-pointer transition text-[11px] font-black uppercase tracking-wider active:scale-95">
+                    <FolderOpen size={16} /> <span>{t('importBeatmap')}</span>
+                </button>
+                <button onClick={() => beatmap ? setPreviewOpen(true) : handleImportBeatmap()}
+                    title={t('openPreview')}
+                    className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg cursor-pointer transition text-[11px] font-black uppercase tracking-wider border active:scale-95 shrink-0 whitespace-nowrap ${beatmap ? 'bg-green-500/15 border-green-500/40 text-green-400 hover:bg-green-500/25' : 'bg-[var(--chip2)] border-[var(--line2)] text-[var(--t4)]'}`}>
+                    <Eye size={16} /> <span>{t('openPreview')}</span>
+                </button>
+                {/* 独立预览窗口：真正的 OS 窗口，能拖到软件窗口外面（内嵌小窗拖不出去） */}
+                <button
+                    onClick={() => { if (!beatmap) return handleImportBeatmap(); setPreviewOpen(true); void openDetachedPreview(); }}
+                    title="把谱面预览弹成独立窗口（可拖到软件窗口外面，和 osu! 并排放）"
+                    className={`flex items-center justify-center p-2 rounded-lg cursor-pointer transition border active:scale-95 shrink-0 ${beatmap ? 'bg-[var(--chip2)] hover:bg-[var(--chip)] border-[var(--accent)]/40 text-[var(--accent)]' : 'bg-[var(--chip2)] border-[var(--line2)] text-[var(--t3)]'}`}>
+                    <PictureInPicture2 size={16} />
+                </button>
+                {fileName && <span className="shrink-0 text-xs text-[var(--t4)] truncate max-w-[200px] font-mono bg-[var(--chip2)] px-3 py-1 rounded-full border border-[var(--line2)]">{fileName}</span>}
                 {mhState === 'error' && <span className="text-xs text-red-400 max-w-[220px] truncate">{mhMsg}</span>}
             </div>
             <div className="flex items-center gap-4">
@@ -1644,8 +2015,56 @@ function App() {
              </div>
         </div>
 
-        <div ref={sidebarScrollRef} onScroll={(e) => setShowTopBtn((e.target as HTMLElement).scrollTop > 120)} className="flex-1 overflow-y-auto p-6 space-y-5 custom-scrollbar bg-black/20">
-            <div className="flex items-center justify-between mb-2">
+        {/* v0.9.0 外部谱面状态条：来源 / 难度 / 实时写回开关 / 备份恢复 */}
+        {beatmap && (
+            <div className="px-5 py-3 border-b border-[var(--line)] bg-green-500/[0.04] shrink-0 space-y-2">
+                <div className="flex items-center gap-2">
+                    <Save size={14} className="text-green-400 shrink-0" />
+                    <span className="text-[10px] font-black uppercase tracking-widest text-green-400 shrink-0">{t('beatmapSource')}</span>
+                    <span className="text-[10px] font-mono text-[var(--t3)] truncate flex-1" title={beatmap.sourcePath}>
+                        {beatmap.displayName} · {beatmap.keyCount}K · {beatmap.timing.length} lines
+                    </span>
+                </div>
+                {beatmapEntries.length > 1 && (
+                    <select value={beatmap.displayName} onChange={e => handleSwitchDifficulty(e.target.value)}
+                        className="w-full bg-[var(--bg)] border border-[var(--line2)] rounded-md px-2 py-1 text-[11px] text-[var(--t1)]">
+                        {beatmapEntries.map(e => <option key={e.name} value={e.name}>{e.name}</option>)}
+                    </select>
+                )}
+                <div className="flex items-center gap-2">
+                    <label className="flex items-center gap-1.5 text-[10px] text-[var(--t2)] cursor-pointer shrink-0">
+                        <input type="checkbox" checked={writeBack} onChange={e => {
+                            if (e.target.checked && !writeConfirmed) {
+                                const ok = window.confirm(t('writeBackConfirm'));
+                                setWriteConfirmed(ok); setWriteBack(ok);
+                            } else setWriteBack(e.target.checked);
+                        }} />
+                        {t('writeBack')}
+                    </label>
+                    <button onClick={handleSaveBeatmapAs} title={t('saveBeatmapAs')}
+                        className="flex items-center gap-1 px-1.5 py-1 rounded bg-[var(--chip2)] hover:bg-[var(--chip)] text-[10px] text-[var(--t3)]">
+                        <Save size={11} /> {t('saveBeatmapAs')}
+                    </button>
+                    <button onClick={handleRestoreBackup} title={t('restoreBackup')}
+                        className="flex items-center gap-1 px-1.5 py-1 rounded bg-[var(--chip2)] hover:bg-[var(--chip)] text-[10px] text-[var(--t3)]">
+                        <RotateCcw size={11} /> {t('restoreBackup')}
+                    </button>
+                </div>
+                <div className={`text-[10px] leading-tight flex items-start gap-1 ${writeStatus.kind === 'error' ? 'text-red-400' : writeStatus.kind === 'ok' ? 'text-green-400' : 'text-[var(--t4)]'}`}>
+                    {writeStatus.kind === 'error' && <AlertTriangle size={11} className="shrink-0 mt-0.5" />}
+                    <span className="truncate">{writeStatus.msg || t('previewOnlyExternal')}</span>
+                </div>
+            </div>
+        )}
+
+        <div ref={sidebarScrollRef}
+             onScroll={(e) => {
+                 const top = (e.target as HTMLElement).scrollTop;
+                 setShowTopBtn(top > 120);
+                 setListScrollTop(top);
+             }}
+             className="flex-1 overflow-y-auto px-6 pt-5 pb-6 custom-scrollbar bg-black/20">
+            <div className="flex items-center justify-between mb-3">
                 <span className="text-xs text-[var(--t3)] font-black uppercase tracking-widest">{t('sections')}</span>
                 <div className="flex items-center gap-1.5">
                     {/* 段落跳转输入框：输入序号跳转对应段落卡片 */}
@@ -1669,12 +2088,14 @@ function App() {
             </div>
             
             {timingPoints.length === 1 && (
-                <div className="p-4 bg-[var(--accent)]/5 rounded-xl border border-[var(--accent)]/10 text-[11px] text-[var(--accent)]/60 leading-relaxed italic">
+                <div className="mb-4 p-4 bg-[var(--accent)]/5 rounded-xl border border-[var(--accent)]/10 text-[11px] text-[var(--accent)]/60 leading-relaxed italic">
                     {t('wfTip')}
                 </div>
             )}
 
-            {timingRows}
+            <div style={{ position: 'relative', height: orderedPoints.length * ROW_H }}>
+                {timingRows}
+            </div>
         </div>
 
         {/* 回到顶部悬浮球（变速段落区滚动时显示） */}
@@ -1696,6 +2117,29 @@ function App() {
           onChange={updateSettings}
           onReset={handleResetSettings}
           onClose={() => setShowSettings(false)}
+        />
+      )}
+
+      {/* 谱面预览：竖屏可调小窗，浮在频谱层之上；无遮罩/虚化，播放头跟随主进度条。
+          弹出独立窗口后这里不再重复渲染（独立窗口会接管，关掉后自动回到内嵌小窗）。 */}
+      {previewOpen && beatmap && !previewDetached && (
+        <BeatmapPreview
+          doc={beatmap}
+          points={rawPoints as PatchPoint[]}
+          getPlayheadTime={getPreviewPlayheadTime}
+          onClose={closePreview}
+          fps={previewFps}
+          onCommand={previewCommand}
+          onDetach={openDetachedPreview}
+          recHeight={settings.recHeight}
+          recFps={settings.recFps}
+          recKbps={settings.recKbps}
+          getAudioStream={getRecordAudioStream}
+          playing={isPlaying}
+          audioMs={audioData ? Math.round(audioData.duration * 1000) : undefined}
+          recordMetronome={settings.recordMetronome}
+          onRecordMetronomeChange={handleRecordMetronomeChange}
+          onRecordingChange={handlePreviewRecording}
         />
       )}
     </div>
