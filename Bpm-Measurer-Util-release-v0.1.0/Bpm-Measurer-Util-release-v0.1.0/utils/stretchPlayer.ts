@@ -77,9 +77,18 @@ function createPitchShifter(
 ): StretchHandle {
   let shifter: PitchShifter | null = null;
   let ended = false;
+  // ★ 关键：拿到内部 ScriptProcessorNode 的引用，用于「真正停掉」它。
+  //   soundtouchjs 的 disconnect() 只断开连线，onaudioprocess 仍会持续回调、
+  //   节点也不释放 —— 反复 seek/暂停/录制会泄漏一堆「死」节点，把音频线程拖到爆音/卡死。
+  //   这里额外把 onaudioprocess 置空并断开，让节点彻底停止工作、可被 GC。
+  let scriptNode: ScriptProcessorNode | undefined;
   const guard = () => {
     if (ended) return;
     ended = true;
+    // 播到末尾：立刻把内部节点静音停掉，阻止它继续空转 / 反复 onEnd 吐出残留噪声（爆音）
+    if (scriptNode) {
+      try { scriptNode.onaudioprocess = null; scriptNode.disconnect(); } catch { /* 忽略 */ }
+    }
     onEnd?.();
   };
   shifter = new PitchShifter(ctx, buffer, BUFFER_SIZE, guard);
@@ -90,7 +99,9 @@ function createPitchShifter(
     const pct = Math.min(100, Math.max(0, (startAt / buffer.duration) * 100));
     shifter.percentagePlayed = pct;
   }
+  scriptNode = (shifter as unknown as { node?: ScriptProcessorNode }).node as ScriptProcessorNode | undefined;
   shifter.connect(to);
+
   return {
     setRate(r: number) {
       if (shifter) shifter.tempo = r;
@@ -99,6 +110,13 @@ function createPitchShifter(
       if (shifter) {
         try { shifter.disconnect(); } catch { /* 已断开 */ }
         shifter = null;
+      }
+      // 彻底停掉 ScriptProcessorNode：断开 + 清空回调，阻止它继续吐残留数据（爆音来源）
+      if (scriptNode) {
+        try {
+          scriptNode.onaudioprocess = null;
+          scriptNode.disconnect();
+        } catch { /* 忽略 */ }
       }
       // 停掉也把 onEnd 关掉，避免「手动 stop」误触发「播完」逻辑
       ended = true;

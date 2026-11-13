@@ -1,7 +1,7 @@
 {
   "name": "bpm-measurer-util",
   "private": true,
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "BPM 测速助手 · 外部谱面红/绿线编辑与变速实时预览",
   "author": "kkkhover",
   "type": "module",

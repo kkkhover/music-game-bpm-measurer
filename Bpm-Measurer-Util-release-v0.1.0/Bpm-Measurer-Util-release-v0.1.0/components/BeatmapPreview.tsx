@@ -1082,9 +1082,15 @@ const BeatmapPreview: React.FC<Props> = ({
       // 录制：同一帧按 720p 再画一遍到离屏画布（captureStream 只认这块画布的实际绘制）
       const rec = recRef.current;
       if (rec) {
+        // ★ 录制帧用**真实播放头**（raw），不用 smoothTime 的外推值：
+        //   录制的音轨来自 MediaStreamDestination，它跟 AudioContext.currentTime 实时对齐；
+        //   而 smoothTime 为 120fps 显示平滑做了墙钟外推，画面会略微领先/滞后真实音频位置，
+        //   这个偏差在蓝牙耳机下（音频时钟漂移）会累积，表现就是「录屏延迟越来越高」。
+        //   录制时直接用 raw，让每一帧画面内容严格对应当时的音频位置，音画天然同步。
+        const tSecRec = getTimeRef.current();
         rec.ctx.setTransform(1, 0, 0, 1, 0, 0);
         const rfc = getFrameRef.current(rec.w, rec.h, 1, cfg.rs, cfg.skin, cfg.doc.keyCount);
-        drawFrameRef.current(rec.ctx, rfc, tSec);
+        drawFrameRef.current(rec.ctx, rfc, tSecRec);
         // 把画布下方的数据条（时间 / BPM / SV / 流速 / 连击）也画进录制画面：
         // 数据条是 HTML 元素、不进 captureStream，录屏时它本来不会出现，这里手动画上。
         drawRecHud(rec.ctx, rec.w, rec.h, hudRef.current);
@@ -1093,7 +1099,7 @@ const BeatmapPreview: React.FC<Props> = ({
         //   - 完整录制（autoStop=true）→ 录到曲尾自动停（优先用**音频**时长，谱面 durationMs
         //     只到「最后音符 + 2s」，照它停会把音乐尾巴切掉）。
         const endMs = audioMs && audioMs > 1000 ? audioMs : cfg.doc.durationMs;
-        if (rec.autoStop && tSec * 1000 >= endMs) stopRecordingRef.current('end');
+        if (rec.autoStop && tSecRec * 1000 >= endMs) stopRecordingRef.current('end');
         // 安全兜底：无论哪种录制，超过上限都强制停，避免一直挂着录满内存。
         if (now - rec.startedAt > REC_MAX_MS) stopRecordingRef.current('end');
       }

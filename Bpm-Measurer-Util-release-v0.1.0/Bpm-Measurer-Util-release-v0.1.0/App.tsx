@@ -205,7 +205,10 @@ const formatTime = (t: number): string => {
 }
 
 function App() {
-  const [audioContext] = useState(() => new (window.AudioContext || (window as any).webkitAudioContext)());
+  // latencyHint='interactive'：把 AudioContext 的基础输出延迟压到最小（约 10~20ms）。
+  // 蓝牙耳机（A2DP）本身有 150~300ms 的额外链路延迟，且会随缓冲区累积而漂移；
+  // 这里尽量压低 Web Audio 自身的一层延迟，减少录制时音画之间的基准偏差。
+  const [audioContext] = useState(() => new (window.AudioContext || (window as any).webkitAudioContext)({ latencyHint: 'interactive' }));
   const [audioData, setAudioData] = useState<AudioData | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   // 音频的**绝对路径**（Electron 下由原生对话框给出）。
@@ -354,8 +357,34 @@ function App() {
       clickRecGainRef.current = click;
     } catch { /* 老浏览器不支持：录制就只有画面 */ }
   }
-  /** 给预览组件用：返回录制音频流（同一份，永久复用） */
-  const getRecordAudioStream = useCallback(() => recDestRef.current?.stream ?? null, []);
+  /**
+   * 给预览组件用：返回一条**全新的**录制音频流。
+   *
+   * 为什么每次都要新开一个 MediaStreamAudioDestinationNode，而不是复用一条永久 stream：
+   *   MediaRecorder.stop() 会把它持有的**所有** track 一并 stop（标准 Web API 行为）。
+   *   若永久复用 recDestRef 里那条 stream 的音轨，第一次录制结束后这条音轨就
+   *   readyState='ended'，masterGain → recMix → 旧 dest 的连线等于死了 —— 之后：
+   *     · 再录只有画面没声音（getAudioTracks 滤掉 ended track，withAudio=false）；
+   *     · 旧 dest 卡在音频图里，回放别的区域时残留/爆音。
+   *   所以每次开录都现建一个 dest 接进 recMix，拿到干净的 live track；旧的随录制
+   *   结束被替换，音频图不堆积死节点。
+   */
+  const getRecordAudioStream = useCallback((): MediaStream | null => {
+    const mix = recMixRef.current;
+    if (!mix) return null;
+    try {
+      // 旧 dest 若有残留，先从 recMix 断开（断开后它仍可被 GC，连同被 stop 的 track 一起释放）
+      if (recDestRef.current) {
+        try { recDestRef.current.disconnect(); } catch { /* 忽略 */ }
+      }
+      const dest = audioContext.createMediaStreamDestination();
+      mix.connect(dest);
+      recDestRef.current = dest;
+      return dest.stream;
+    } catch {
+      return null;
+    }
+  }, [audioContext]);
   // 挂载/音量变化时同步到实际设置值（平滑过渡防爆音）
   useEffect(() => {
     const g = masterGainRef.current;
