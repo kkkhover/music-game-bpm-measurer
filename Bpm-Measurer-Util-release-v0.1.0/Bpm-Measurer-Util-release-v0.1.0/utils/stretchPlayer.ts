@@ -82,6 +82,14 @@ function createPitchShifter(
   //   节点也不释放 —— 反复 seek/暂停/录制会泄漏一堆「死」节点，把音频线程拖到爆音/卡死。
   //   这里额外把 onaudioprocess 置空并断开，让节点彻底停止工作、可被 GC。
   let scriptNode: ScriptProcessorNode | undefined;
+  // ★ 每个播放源一个独立 gain，用于「淡出后再断开」，消除硬切断的「啪」爆音：
+  //   大幅 seek/暂停时若正好切在波形高电平处，直接 disconnect 会让电平从峰值瞬断到 0，
+  //   听到一声爆音。这里在断开前先把 gain 快速淡到 0（~20ms），人耳几乎无感却听不到啪声。
+  const gainNode = ctx.createGain();
+  gainNode.gain.value = 1;
+  gainNode.connect(to);
+  let fadeTimer: number | null = null;
+
   const guard = () => {
     if (ended) return;
     ended = true;
@@ -89,18 +97,24 @@ function createPitchShifter(
     if (scriptNode) {
       try { scriptNode.onaudioprocess = null; scriptNode.disconnect(); } catch { /* 忽略 */ }
     }
+    try { gainNode.disconnect(); } catch { /* 忽略 */ }
     onEnd?.();
   };
   shifter = new PitchShifter(ctx, buffer, BUFFER_SIZE, guard);
   shifter.tempo = rate;
   // seek：percentagePlayed 的 setter 会 clear 内部缓冲再设 sourcePosition，干净无残留。
   // 必须在 connect 之前设，否则会先按 0 位置吐一小段再跳。
+  // ★ percentagePlayed 的 setter 期望的是 **0~1 的比例**（不是 0~100 的百分比）！
+  //   getter 返回的是 0~100（`100 * sourcePosition/(duration*sampleRate)`），setter 却按
+  //   `perc * duration * sampleRate` 直接算位置 —— 传 0~100 会让 sourcePosition 变成实际的
+  //   100 倍、远超 buffer 长度，于是 extract 立即返回 0 帧 → onEnd → 播放零点几秒就爆音停。
+  //   官方 example.js 里就是 `perc = relX/offsetWidth`（0~1）再赋给 percentagePlayed。
   if (startAt > 0 && buffer.duration > 0) {
-    const pct = Math.min(100, Math.max(0, (startAt / buffer.duration) * 100));
-    shifter.percentagePlayed = pct;
+    const ratio = Math.min(1, Math.max(0, startAt / buffer.duration)); // 0~1
+    shifter.percentagePlayed = ratio;
   }
   scriptNode = (shifter as unknown as { node?: ScriptProcessorNode }).node as ScriptProcessorNode | undefined;
-  shifter.connect(to);
+  shifter.connect(gainNode);
 
   return {
     setRate(r: number) {
@@ -108,18 +122,22 @@ function createPitchShifter(
     },
     stop() {
       if (shifter) {
-        try { shifter.disconnect(); } catch { /* 已断开 */ }
         shifter = null;
+        // 停掉也把 onEnd 关掉，避免「手动 stop」误触发「播完」逻辑
+        ended = true;
+        // 淡出 20ms 后再真正断开：消除硬切断爆音。淡出期间这个源已脱离主逻辑（shifter=null），
+        // 但 gain 仍连着，靠定时器收尾。
+        const now = ctx.currentTime;
+        try { gainNode.gain.setValueAtTime(gainNode.gain.value, now); } catch { /* 忽略 */ }
+        try { gainNode.gain.linearRampToValueAtTime(0.0001, now + 0.02); } catch { /* 忽略 */ }
+        if (fadeTimer !== null) { clearTimeout(fadeTimer); }
+        fadeTimer = window.setTimeout(() => {
+          try { gainNode.disconnect(); } catch { /* 忽略 */ }
+          if (scriptNode) {
+            try { scriptNode.onaudioprocess = null; scriptNode.disconnect(); } catch { /* 忽略 */ }
+          }
+        }, 24);
       }
-      // 彻底停掉 ScriptProcessorNode：断开 + 清空回调，阻止它继续吐残留数据（爆音来源）
-      if (scriptNode) {
-        try {
-          scriptNode.onaudioprocess = null;
-          scriptNode.disconnect();
-        } catch { /* 忽略 */ }
-      }
-      // 停掉也把 onEnd 关掉，避免「手动 stop」误触发「播完」逻辑
-      ended = true;
     },
     get stopped() { return shifter === null; },
   };
@@ -135,14 +153,24 @@ function createNativeFallback(
   onEnd?: () => void,
 ): StretchHandle {
   const source = ctx.createBufferSource();
+  const gainNode = ctx.createGain();
+  gainNode.gain.value = 1;
   source.buffer = buffer;
   source.playbackRate.value = rate;
-  source.connect(to);
-  source.onended = () => onEnd?.();
+  source.connect(gainNode);
+  gainNode.connect(to);
+  source.onended = () => { try { gainNode.disconnect(); } catch { /* 忽略 */ } onEnd?.(); };
   source.start(0, Math.max(0, Math.min(buffer.duration, startAt)));
   return {
     setRate(r: number) { source.playbackRate.value = r; },
-    stop() { try { source.stop(); } catch { /* 已停 */ } },
+    stop() {
+      // 淡出 20ms 再停，消除硬切断爆音
+      const now = ctx.currentTime;
+      try { gainNode.gain.setValueAtTime(gainNode.gain.value, now); } catch { /* 忽略 */ }
+      try { gainNode.gain.linearRampToValueAtTime(0.0001, now + 0.02); } catch { /* 忽略 */ }
+      try { source.stop(now + 0.025); } catch { /* 已停 */ }
+      window.setTimeout(() => { try { gainNode.disconnect(); } catch { /* 忽略 */ } }, 30);
+    },
     get stopped() { return false; },
   };
 }
