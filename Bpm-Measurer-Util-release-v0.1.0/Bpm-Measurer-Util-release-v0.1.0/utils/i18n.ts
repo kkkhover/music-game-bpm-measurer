@@ -1181,7 +1181,7 @@ const extraRec: Record<Language, Dict> = {
     recResolution: '分辨率',
     recFps: '帧率',
     recBitrate: '码率',
-    recHint: '录制小窗时使用的视频参数。码率越低文件越小；预览画面大部分是纯色块与纯色轨道，2000~3000 kbps 已经看不出压缩。音频固定 128 kbps（只录音乐，不含节拍器）。',
+    recHint: '录制小窗时使用的视频参数，三项都可直接输入任意值。码率越低文件越小；预览画面大部分是纯色块与纯色轨道，2000~3000 kbps 已经看不出压缩。音频固定 128 kbps（只录音乐，不含节拍器）。',
     recEstimate: '约 {size} MB/分钟',
   },
   en: {

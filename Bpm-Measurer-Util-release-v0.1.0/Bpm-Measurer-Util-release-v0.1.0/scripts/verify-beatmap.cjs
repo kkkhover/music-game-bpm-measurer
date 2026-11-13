@@ -561,6 +561,39 @@ for (const f of files) {
 }
 ok(dirtyNames === 0, `样本里 ${files.length} 张谱面的导出名全部合法（0 个非法）`);
 
+// ===== 打击音效（hitsound）=====
+console.log('\n=== 打击音效：采样选择（normal/soft/drum × hitnormal/whistle/clap/finish）===');
+const HS = require(path.join(ROOT, 'utils/hitSound.ts'));
+ok(HS.pickHitSound(1, 1) === 'normal-hitnormal', 'normal 组 hitnormal');
+ok(HS.pickHitSound(2, 1) === 'normal-hitwhistle', 'whistle 位 → hitwhistle');
+ok(HS.pickHitSound(4, 1) === 'normal-hitfinish', 'finish 位 → hitfinish');
+ok(HS.pickHitSound(8, 1) === 'normal-hitclap', 'clap 位 → hitclap');
+ok(HS.pickHitSound(1, 2) === 'soft-hitnormal', 'soft 组 hitnormal');
+ok(HS.pickHitSound(4, 3) === 'drum-hitfinish', 'drum 组 hitfinish');
+ok(HS.pickHitSound(10, 1) === 'normal-hitclap', 'whistle+clap(10) 优先级：clap > whistle');
+ok(HS.pickHitSound(6, 1) === 'normal-hitfinish', 'whistle+finish(6) 优先级：finish > whistle');
+ok(HS.pickHitSound(0, 0) === 'normal-hitnormal', 'sampleSet 缺省(0) 回退 normal');
+// fallback：soft/drum 缺失回退 normal
+const hasNormalOnly = (n) => ['normal-hitnormal', 'normal-hitclap'].includes(n);
+ok(HS.fallbackHitSound('drum-hitclap', hasNormalOnly) === 'normal-hitclap', 'drum-hitclap 缺失回退 normal-hitclap');
+ok(HS.fallbackHitSound('drum-hitfinish', hasNormalOnly) === 'normal-hitnormal', 'drum-hitfinish 缺失回退 normal-hitnormal');
+ok(HS.fallbackHitSound('soft-hitwhistle', hasNormalOnly) === 'normal-hitnormal', 'soft-hitwhistle 缺失回退 normal-hitnormal');
+
+// ===== 音符 hitSound 字段解析 =====
+console.log('\n=== 音符 hitSound 字段解析 ===');
+let hsParsedOk = true;
+let hsNonZero = 0;
+for (const f of files) {
+  const doc = B.parseOsuDocument(f.text, f.name, f.name);
+  if (!doc || !doc.notes || !doc.notes.hitSound) { hsParsedOk = false; break; }
+  if (doc.notes.hitSound.length !== doc.notes.count) { hsParsedOk = false; break; }
+  for (let i = 0; i < doc.notes.count; i++) {
+    if (doc.notes.hitSound[i] !== 0) hsNonZero++;
+  }
+}
+ok(hsParsedOk, '所有谱面的 notes.hitSound 长度与 count 一致');
+ok(hsNonZero > 0, `样本里有 ${hsNonZero} 个音符带非零 hitSound 位（有音色信息可播）`);
+
 
 const summary = `${files.length - skipped} 张 mania 谱面` + (skipped ? ` / ${skipped} 张非 mania 已跳过` : '');
 console.log('\n==== ' + (failures === 0 ? `ALL PASSED (${summary})` : `${failures} FAILURES (${summary})`) + ' ====');

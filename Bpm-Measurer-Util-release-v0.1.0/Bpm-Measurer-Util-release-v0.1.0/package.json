@@ -39,7 +39,7 @@
     "asar": false,
     "directories": {
       "buildResources": "resources",
-      "output": "D:/tmp/bpm app/BPM测速助手_v0.9.0"
+      "output": "D:/tmp/bpm app/BPM测速助手_v0.9.1"
     },
     "files": [
       "dist/**/*",

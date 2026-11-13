@@ -23,6 +23,8 @@ export interface SkinPayload {
   error?: string;
   /** 主进程改写过像素的素材（TIFF→PNG 且只留顶部 rows 行）：h = 原图完整高度，rows = 实际行数 */
   imageMeta?: Record<string, { h: number; rows: number }>;
+  /** 打击音效采样（normal-hitnormal/whistle/clap/finish + soft/drum）：键=采样名，值=dataURL */
+  audio?: Record<string, string>;
 }
 
 export interface SkinImage {

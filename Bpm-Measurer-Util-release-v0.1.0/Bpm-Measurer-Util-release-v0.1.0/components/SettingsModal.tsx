@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { AppSettings, DEFAULT_SETTINGS, THEME_PRESETS, SWATCH_COLORS, SPEC_PALETTES, SPEC_PREVIEW, LANGUAGES, METRONOME_SOUNDS, MetronomeCategory, SpecCategory, ThemePreset, randomAccentPair, PREVIEW_FPS_OPTIONS, REC_HEIGHT_OPTIONS, REC_FPS_OPTIONS, REC_KBPS_OPTIONS, recSizePerMinute } from '../utils/settings';
+import { AppSettings, DEFAULT_SETTINGS, THEME_PRESETS, SWATCH_COLORS, SPEC_PALETTES, SPEC_PREVIEW, LANGUAGES, METRONOME_SOUNDS, MetronomeCategory, SpecCategory, ThemePreset, randomAccentPair, PREVIEW_FPS_OPTIONS, recSizePerMinute } from '../utils/settings';
 import { t } from '../utils/i18n';
 import { X, RefreshCw, Shuffle, FlipVertical2, ArrowLeft, MonitorPlay } from 'lucide-react';
 
@@ -30,6 +30,33 @@ const SliderRow: React.FC<{
       onChange={(e) => onChange(parseFloat(e.target.value))}
       className="w-full accent-[var(--accent)] cursor-pointer"
     />
+  </div>
+);
+
+/** 数值输入行：label + 可输入任意数值的输入框（带单位）+ 简短提示 */
+const NumberField: React.FC<{
+  label: string; value: number; suffix?: string; hint?: string;
+  min?: number; max?: number; step?: number;
+  onChange: (v: number) => void;
+}> = ({ label, value, suffix = '', hint, min, max, step = 1, onChange }) => (
+  <div className="flex items-center justify-between mb-3">
+    <div className="min-w-0 mr-2">
+      <span className="text-[10px] text-[var(--t3)] uppercase font-bold tracking-widest">{label}</span>
+      {hint && <p className="text-[9px] text-[var(--t4)] leading-tight mt-0.5">{hint}</p>}
+    </div>
+    <div className="flex items-center gap-1.5 shrink-0">
+      <input
+        type="number"
+        min={min} max={max} step={step}
+        value={value}
+        onChange={(e) => {
+          const v = parseFloat(e.target.value);
+          if (Number.isFinite(v)) onChange(v);
+        }}
+        className="w-20 bg-[var(--bg)] border border-[var(--line2)] rounded-md px-2 py-1 text-xs font-mono text-right focus:outline-none focus:border-[var(--accent)]"
+      />
+      {suffix && <span className="text-[10px] text-[var(--t3)]">{suffix}</span>}
+    </div>
   </div>
 );
 
@@ -371,55 +398,35 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onChange, onRes
             </h4>
 
             {/* 分辨率（短边） */}
-            <div className="flex justify-between items-center mb-1.5">
-              <span className="text-[10px] text-[var(--t3)] uppercase font-bold tracking-widest">{t('recResolution')}</span>
-              <span className="text-xs font-mono text-[var(--accent)] font-bold">
-                {settings.recHeight === 1080 ? '1080p' : settings.recHeight === 480 ? '480p' : '720p'}
-              </span>
-            </div>
-            <div className="grid grid-cols-3 gap-2 mb-3">
-              {REC_HEIGHT_OPTIONS.map((h) => (
-                <button key={h} onClick={() => onChange({ ...settings, recHeight: h })}
-                  className={`${btnBase} ${settings.recHeight === h ? 'bg-[var(--accent2)] text-white' : 'bg-[var(--chip2)] text-[var(--t3)] hover:bg-[var(--chip)]'}`}>
-                  {h}p
-                </button>
-              ))}
-            </div>
+            <NumberField
+              label={t('recResolution')}
+              value={settings.recHeight}
+              suffix="px"
+              min={240} max={2160} step={2}
+              onChange={(v) => onChange({ ...settings, recHeight: Math.max(240, Math.min(2160, Math.round(v))) })}
+            />
 
             {/* 帧率 */}
-            <div className="flex justify-between items-center mb-1.5">
-              <span className="text-[10px] text-[var(--t3)] uppercase font-bold tracking-widest">{t('recFps')}</span>
-              <span className="text-xs font-mono text-[var(--accent)] font-bold">{settings.recFps} fps</span>
-            </div>
-            <div className="grid grid-cols-3 gap-2 mb-3">
-              {REC_FPS_OPTIONS.map((f) => (
-                <button key={f} onClick={() => onChange({ ...settings, recFps: f })}
-                  className={`${btnBase} ${settings.recFps === f ? 'bg-[var(--accent2)] text-white' : 'bg-[var(--chip2)] text-[var(--t3)] hover:bg-[var(--chip)]'}`}>
-                  {f}
-                </button>
-              ))}
-            </div>
+            <NumberField
+              label={t('recFps')}
+              value={settings.recFps}
+              suffix="fps"
+              min={1} max={240} step={1}
+              onChange={(v) => onChange({ ...settings, recFps: Math.max(1, Math.min(240, Math.round(v))) })}
+            />
 
             {/* 码率 */}
-            <div className="flex justify-between items-center mb-1.5">
-              <span className="text-[10px] text-[var(--t3)] uppercase font-bold tracking-widest">{t('recBitrate')}</span>
-              <span className="text-xs font-mono text-[var(--accent)] font-bold">
-                {(settings.recKbps / 1000).toFixed(1)} Mbps
-              </span>
-            </div>
-            <div className="grid grid-cols-5 gap-1.5">
-              {REC_KBPS_OPTIONS.map((k) => (
-                <button key={k} onClick={() => onChange({ ...settings, recKbps: k })}
-                  className={`${btnBase} px-1 ${settings.recKbps === k ? 'bg-[var(--accent2)] text-white' : 'bg-[var(--chip2)] text-[var(--t3)] hover:bg-[var(--chip)]'}`}
-                  title={`${k} kbps`}>
-                  {(k / 1000).toFixed(1).replace('.0', '')}
-                </button>
-              ))}
-            </div>
-            <div className="mt-2 text-[10px] text-[var(--t4)] font-mono">
+            <NumberField
+              label={t('recBitrate')}
+              value={settings.recKbps}
+              suffix="kbps"
+              min={200} max={60000} step={100}
+              onChange={(v) => onChange({ ...settings, recKbps: Math.max(200, Math.min(60000, Math.round(v))) })}
+            />
+            <div className="text-[10px] text-[var(--t4)] font-mono -mt-1 mb-1">
               {t('recEstimate', { size: recSizePerMinute(settings.recKbps).toFixed(1) })}
             </div>
-            <p className="text-[10px] text-[var(--t4)] leading-relaxed mt-1.5">{t('recHint')}</p>
+            <p className="text-[10px] text-[var(--t4)] leading-relaxed mt-1">{t('recHint')}</p>
           </section>
 
           {/* ===== 4 一键复原 ===== */}

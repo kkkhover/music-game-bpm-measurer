@@ -17,6 +17,8 @@ import { readZip } from './zipReader.js';
 import { probeImage, tiffToPng } from './imageDecode.js';
 
 const IMG_EXT = /\.(png|jpe?g|webp|bmp|tiff?)$/i;
+/** 打击音效采样扩展名（osu 皮肤支持 wav/ogg/mp3） */
+const AUDIO_EXT = /\.(wav|ogg|mp3)$/i;
 const MAX_FILES = 120;
 const MAX_BYTES = 10 * 1024 * 1024;
 /** 普通精灵单张上限（超过基本是误放的背景图） */
@@ -27,6 +29,8 @@ const MAX_BODY_SINGLE = 24 * 1024 * 1024;
 const BODY_ROWS = 4096;
 /** 嗅探文件头时最多读这么多字节（PNG 的 IHDR / TIFF 的 IFD 都在开头） */
 const HEAD_BYTES = 128 * 1024;
+/** 单个打击音效采样上限（wav 一般几十 KB，ogg/mp3 更小） */
+const MAX_AUDIO_SINGLE = 2 * 1024 * 1024;
 
 export interface SkinEntry { name: string; data: Buffer }
 export interface SkinPayload {
@@ -41,6 +45,9 @@ export interface SkinPayload {
    *  键是 payload.images 里的原始文件名，h 是原图完整高度、rows 是实际保留行数。
    *  渲染层据此保持「逻辑高度 = 原图高度、位图只覆盖顶部 rows 行」的语义。 */
   imageMeta?: Record<string, { h: number; rows: number }>;
+  /** 打击音效采样（normal-hitnormal/whistle/clap/finish + soft/drum 变体）：
+   *  键 = 采样名（如 normal-hitnormal），值 = base64 dataURL（audio/wav 等）。 */
+  audio?: Record<string, string>;
   /** 皮肤来源（用户选的文件夹或 .osk 绝对路径）：渲染进程把它存进 localStorage，
    *  下次打开预览 / 另开独立预览窗口时按这个路径**直接重新读取**，不用再让用户选一遍。 */
   srcPath?: string;
@@ -99,7 +106,7 @@ function indexFolder(root: string): IdxFile[] {
       const rel = (prefix ? `${prefix}/${d.name}` : d.name).toLowerCase();
       const abs = path.join(dir, d.name);
       if (d.isFile()) {
-        if (!IMG_EXT.test(d.name) && !/^skin\.ini$/i.test(d.name)) continue;
+        if (!IMG_EXT.test(d.name) && !AUDIO_EXT.test(d.name) && !/^skin\.ini$/i.test(d.name)) continue;
         let size = 0;
         try { size = fs.statSync(abs).size; } catch { continue; }
         out.push({ rel, abs, size });
@@ -238,7 +245,45 @@ function assemble(entries: IdxFile[], iniText: string, name: string, note?: stri
       if (hit) break; // @2x 存在就不再取 1x
     }
   }
-  return { name, iniText, images, count: matched, note, matched, imageMeta };
+  return { name, iniText, images, count: matched, note, matched, imageMeta, ...collectHitsounds(byRel) };
+}
+
+/** 打击音效采样组（normal/soft/drum）与音色（normal/whistle/clap/finish） */
+const SAMPLE_SETS = ['normal', 'soft', 'drum'] as const;
+const SAMPLE_KINDS = ['hitnormal', 'hitwhistle', 'hitclap', 'hitfinish'] as const;
+
+/**
+ * 从索引里收集打击音效采样（`normal-hitnormal.wav` 等），转 base64 dataURL。
+ * 只收默认名，限量（每种采样一个文件、每文件 ≤ 2MB）。@2x 无意义（音频无 2x）。
+ */
+function collectHitsounds(byRel: Map<string, IdxFile>): { audio?: Record<string, string> } {
+  const audio: Record<string, string> = {};
+  // basename → entry 的反查表（hitsound 可能放在子目录，按文件名兜底）
+  const byBase = new Map<string, IdxFile>();
+  for (const [rel, e] of byRel) {
+    const base = rel.split('/').pop() || rel;
+    if (!byBase.has(base)) byBase.set(base, e);
+  }
+  let n = 0;
+  for (const set of SAMPLE_SETS) {
+    for (const kind of SAMPLE_KINDS) {
+      if (n >= 24) break;
+      const key = `${set}-${kind}`;
+      let hit = false;
+      for (const ext of ['.wav', '.ogg', '.mp3']) {
+        const e = byRel.get(key + ext) ?? byBase.get(key + ext);
+        if (!e || e.size <= 0 || e.size > MAX_AUDIO_SINGLE) continue;
+        let data: Buffer;
+        try { data = e.data ?? fs.readFileSync(e.abs!); } catch { continue; }
+        const mime = ext === '.wav' ? 'audio/wav' : ext === '.ogg' ? 'audio/ogg' : 'audio/mpeg';
+        audio[key] = `data:${mime};base64,${data.toString('base64')}`;
+        n++; hit = true;
+        break;
+      }
+      if (!hit) continue;
+    }
+  }
+  return n > 0 ? { audio } : {};
 }
 
 /** 皮肤文件夹 / .osk → 渲染进程可直接消费的 payload */

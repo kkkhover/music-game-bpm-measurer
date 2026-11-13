@@ -64,6 +64,10 @@ export interface OsuNotes {
   endMs: Float64Array;   // 普通音符 = timeMs
   column: Uint8Array;
   isLn: Uint8Array;      // 1 = 长条 (type & 128)
+  /** 打击音效位（hitSound，第 5 字段）：bit0=normal(1) bit1=whistle(2)
+   *  bit2=finish(4) bit3=clap(8)。LN 尾音在 bit 4~7（同 bit0~3 左移 4 位）。
+   *  预览「打击音效」用：命中头按低 4 位选采样，命中尾按高 4 位。 */
+  hitSound: Uint8Array;
   /** 最长 LN 持续时间（ms）。视口按下界回看时必须带上它，
    *  否则长条起点滚出视口后 body 会被整个裁掉 —— 高流速下就是「LN 提前消失」。 */
   maxHoldMs: number;
@@ -154,7 +158,7 @@ export function parseOsuDocument(text: string, sourcePath = '', displayName = ''
 
   // ---- [HitObjects] ----
   const hoIdx = lines.findIndex(l => l.trim() === '[HitObjects]');
-  const tmpT: number[] = [], tmpE: number[] = [], tmpC: number[] = [], tmpL: number[] = [];
+  const tmpT: number[] = [], tmpE: number[] = [], tmpC: number[] = [], tmpL: number[] = [], tmpH: number[] = [];
   if (hoIdx >= 0) {
     for (let i = hoIdx + 1; i < lines.length; i++) {
       const s = lines[i].trim();
@@ -177,7 +181,8 @@ export function parseOsuDocument(text: string, sourcePath = '', displayName = ''
         if (Number.isFinite(end) && end > timeMs) endMs = end;
         else isLn = 0; // 无效长条按普通音符画
       }
-      tmpT.push(timeMs); tmpE.push(endMs); tmpC.push(col); tmpL.push(isLn);
+      const hitSound = parseInt(p[4], 10) || 0;
+      tmpT.push(timeMs); tmpE.push(endMs); tmpC.push(col); tmpL.push(isLn); tmpH.push(hitSound);
     }
   }
   // 视口裁剪依赖「按时间有序」。绝大多数 .osu 本来有序，个别导出工具会乱序 → 只对这种情况排序
@@ -186,9 +191,9 @@ export function parseOsuDocument(text: string, sourcePath = '', displayName = ''
   if (!sorted) {
     const idx = tmpT.map((_, i) => i).sort((a, b) => tmpT[a] - tmpT[b]);
     const t2 = idx.map(i => tmpT[i]), e2 = idx.map(i => tmpE[i]);
-    const c2 = idx.map(i => tmpC[i]), l2 = idx.map(i => tmpL[i]);
+    const c2 = idx.map(i => tmpC[i]), l2 = idx.map(i => tmpL[i]), h2 = idx.map(i => tmpH[i]);
     for (let i = 0; i < idx.length; i++) {
-      tmpT[i] = t2[i]; tmpE[i] = e2[i]; tmpC[i] = c2[i]; tmpL[i] = l2[i];
+      tmpT[i] = t2[i]; tmpE[i] = e2[i]; tmpC[i] = c2[i]; tmpL[i] = l2[i]; tmpH[i] = h2[i];
     }
   }
   const count = tmpT.length;
@@ -203,6 +208,7 @@ export function parseOsuDocument(text: string, sourcePath = '', displayName = ''
     endMs: Float64Array.from(tmpE),
     column: Uint8Array.from(tmpC),
     isLn: Uint8Array.from(tmpL),
+    hitSound: Uint8Array.from(tmpH),
     maxHoldMs,
   };
 

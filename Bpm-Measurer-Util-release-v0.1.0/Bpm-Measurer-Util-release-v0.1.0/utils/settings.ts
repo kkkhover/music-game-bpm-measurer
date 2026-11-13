@@ -120,12 +120,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   lang: 'zh',
 };
 
-/** 录制分辨率挡位（短边像素）：480p / 720p / 1080p */
-export const REC_HEIGHT_OPTIONS = [480, 720, 1080];
-/** 录制帧率挡位 */
-export const REC_FPS_OPTIONS = [30, 60, 120];
-/** 录制码率挡位（kbps，视频轨；音频固定 128k） */
-export const REC_KBPS_OPTIONS = [1200, 2000, 3000, 4500, 8000];
+/** 录制参数说明：
+ *  - recHeight：短边像素（竖屏小窗 → 宽度；横屏 → 高度），长边按小窗比例算、上限 16:9。
+ *  - recFps / recKbps：视频帧率与码率。
+ *  三项在设置面板里都是**数值输入框**，可填任意值（内部有 clamp：分辨率 240~2160、
+ *  帧率 1~240、码率 200~60000 kbps），不再用固定挡位。 */
 
 /** 录制参数 → 估算每分钟体积（MB）：(视频+音频 kbps) × 60 / 8 / 1024
  *  实际码率会低于设定值（静态画面多时 H.264 自己会降），这里乘 0.85 的经验系数。 */

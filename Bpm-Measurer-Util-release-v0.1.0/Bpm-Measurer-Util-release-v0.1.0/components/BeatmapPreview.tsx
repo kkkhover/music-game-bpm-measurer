@@ -14,6 +14,7 @@ import { osuPxPerSec, osuSpeedLabel, SS_MIN, SS_MAX, SS_DEFAULT } from '../utils
 import { recSizePerMinute } from '../utils/settings';
 import { safeFileName } from '../utils/exportName';
 import { stepClock, newClock } from '../utils/previewClock';
+import { pickHitSound, fallbackHitSound } from '../utils/hitSound';
 import type { PatchPoint } from '../utils/osuPatch';
 import type { PreviewCommand } from '../utils/previewBridge';
 
@@ -89,6 +90,26 @@ const REC_DEF_FPS = 60;
 const REC_DEF_KBPS = 2000;
 const REC_AUDIO_KBPS = 128;
 const REC_MAX_MS = 30 * 60 * 1000; // 安全上限：半小时自动停，避免一直挂着录满内存
+
+/** timing 里「最后一个 timeMs <= t」的采样组（sampleSet，1=normal 2=soft 3=drum） */
+function sampleSetAt(timing: { timeMs: number; sampleSet: number }[], tMs: number): number {
+  let cur = 0;
+  for (const p of timing) {
+    if (p.timeMs > tMs) break;
+    cur = p.sampleSet;
+  }
+  return cur;
+}
+
+/** timing 里「最后一个 timeMs <= t」的音量（0~100） */
+function volumeAt(timing: { timeMs: number; volume: number }[], tMs: number): number {
+  let cur = 100;
+  for (const p of timing) {
+    if (p.timeMs > tMs) break;
+    cur = p.volume;
+  }
+  return cur;
+}
 
 function loadWin(): WinState {
   try {
@@ -347,6 +368,8 @@ const BeatmapPreview: React.FC<Props> = ({
   const [showLines, setShowLines] = useState(true);
   /** 自动游玩特效：音符落到判定线就"接上"（键图按下态 + 命中光斑 + 连击数） */
   const [autoFx, setAutoFx] = useState(true);
+  /** 打击音效：音符命中判定线时播放皮肤自带的 hitsound 采样（normal-hitnormal 等） */
+  const [hitSound, setHitSound] = useState(true);
   const [skin, setSkin] = useState<SkinStyle | null>(null);
   const [skinBusy, setSkinBusy] = useState(false);
   /** 当前皮肤的来源路径（.osk 或皮肤文件夹）：持久化到 localStorage，下次直接重读 */
@@ -362,6 +385,13 @@ const BeatmapPreview: React.FC<Props> = ({
     fps: number;
     /** 是否在「曲尾」自动停止：仅「完整录制」为 true；普通录制手动停止（想录多久录多久） */
     autoStop: boolean;
+    /** 录制画布上一次重绘的墙钟（performance.now，ms）。录制画布按录制帧率节流重绘，
+     *  不跟预览帧率走 —— 预览 120fps 时省一半离屏绘制开销（OBS「帧节奏器」思想）。 */
+    lastDrawAt: number;
+    /** 录制帧率的节流误差累积（lazer ThrottledFrameClock 的 accumulatedSleepError 思想）：
+     *  每帧把「实际间隔 - 目标间隔」的差累加，下次用「目标间隔 - 误差」补偿，
+     *  让录制帧率长期严格等于目标，不因 rAF 抖动而漂移。 */
+    drawError: number;
   } | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   /** 组件已卸载：卸载时停掉的录制不要再弹「另存为」（用户只是关了预览） */
@@ -717,6 +747,19 @@ const BeatmapPreview: React.FC<Props> = ({
   const fxRef = useRef<AutoPlayState>({
     flash: new Float32Array(0), pressed: new Uint8Array(0), held: new Uint8Array(0),
   });
+  /**
+   * 打击音效：独立的 AudioContext（短音效专用，与主窗口音乐图解耦）。
+   * 首次命中才创建 —— 浏览器要求 AudioContext 在用户手势后才能出声，
+   * 预览打开本身就是用户操作，但独立窗口/异步加载时延迟创建更稳。
+   */
+  const hitCtxRef = useRef<AudioContext | null>(null);
+  /** 已解码的 hitsound 采样：采样名 → AudioBuffer */
+  const hitBufRef = useRef<Map<string, AudioBuffer>>(new Map());
+  /** 当前皮肤有没有 hitsound 采样（没有就不触发，也避免误报「无音效」） */
+  const hitNamesRef = useRef<Set<string>>(new Set());
+  /** 命中游标：已播到第几个音符（音符按时间有序，播放头单调，指针只进不退；
+   *  seek 时用 firstNoteAtOrAfter 重定位）。 */
+  const hitCursorRef = useRef(0);
 
   /**
    * 画一帧。
@@ -1074,6 +1117,8 @@ const BeatmapPreview: React.FC<Props> = ({
         canvas.width / dpr, canvas.height / dpr, dpr,
         cfg.rs, cfg.skin, cfg.doc.keyCount,
       );
+      // 打击音效：用**真实播放头**触发（不用 smoothTime 外推，音效要跟音频位置严格对齐）
+      checkHitSoundsRef.current(getTimeRef.current() * 1000);
       drawFrameRef.current(ctx, fc, tSec);
       lastT = tSec;
       dirtyRef.current = false;
@@ -1082,24 +1127,35 @@ const BeatmapPreview: React.FC<Props> = ({
       // 录制：同一帧按 720p 再画一遍到离屏画布（captureStream 只认这块画布的实际绘制）
       const rec = recRef.current;
       if (rec) {
-        // ★ 录制帧用**真实播放头**（raw），不用 smoothTime 的外推值：
-        //   录制的音轨来自 MediaStreamDestination，它跟 AudioContext.currentTime 实时对齐；
-        //   而 smoothTime 为 120fps 显示平滑做了墙钟外推，画面会略微领先/滞后真实音频位置，
-        //   这个偏差在蓝牙耳机下（音频时钟漂移）会累积，表现就是「录屏延迟越来越高」。
-        //   录制时直接用 raw，让每一帧画面内容严格对应当时的音频位置，音画天然同步。
-        const tSecRec = getTimeRef.current();
-        rec.ctx.setTransform(1, 0, 0, 1, 0, 0);
-        const rfc = getFrameRef.current(rec.w, rec.h, 1, cfg.rs, cfg.skin, cfg.doc.keyCount);
-        drawFrameRef.current(rec.ctx, rfc, tSecRec);
-        // 把画布下方的数据条（时间 / BPM / SV / 流速 / 连击）也画进录制画面：
-        // 数据条是 HTML 元素、不进 captureStream，录屏时它本来不会出现，这里手动画上。
-        drawRecHud(rec.ctx, rec.w, rec.h, hudRef.current);
+        // ★ 录制画布按**录制帧率**节流重绘，不跟预览帧率走。
+        //   预览 vsync（120fps）+ 录制 60fps 时，旧实现每帧都重绘录制画布 → 白做一半。
+        //   这里用「误差累积补偿」（参考 osu!lazer 的 ThrottledFrameClock）：
+        //   目标间隔 = 1000/fps，实际间隔 - 目标间隔 的差累进 drawError，
+        //   下次在「目标间隔 - 误差」处重绘，长期严格对齐录制帧率，零漂移。
+        const recInterval = 1000 / Math.max(1, rec.fps);
+        if (now - rec.lastDrawAt >= recInterval - rec.drawError - 1) {
+          // ★ 录制帧用**真实播放头**（raw），不用 smoothTime 的外推值：
+          //   录制的音轨来自 MediaStreamDestination，它跟 AudioContext.currentTime 实时对齐；
+          //   而 smoothTime 为 120fps 显示平滑做了墙钟外推，画面会略微领先/滞后真实音频位置，
+          //   这个偏差在蓝牙耳机下（音频时钟漂移）会累积，表现就是「录屏延迟越来越高」。
+          //   录制时直接用 raw，让每一帧画面内容严格对应当时的音频位置，音画天然同步。
+          const tSecRec = getTimeRef.current();
+          rec.ctx.setTransform(1, 0, 0, 1, 0, 0);
+          const rfc = getFrameRef.current(rec.w, rec.h, 1, cfg.rs, cfg.skin, cfg.doc.keyCount);
+          drawFrameRef.current(rec.ctx, rfc, tSecRec);
+          // 把画布下方的数据条（时间 / BPM / SV / 流速 / 连击）也画进录制画面：
+          // 数据条是 HTML 元素、不进 captureStream，录屏时它本来不会出现，这里手动画上。
+          drawRecHud(rec.ctx, rec.w, rec.h, hudRef.current);
+          rec.drawError += (now - rec.lastDrawAt) - recInterval;
+          rec.drawError = Math.max(-recInterval * 2, Math.min(recInterval * 2, rec.drawError));
+          rec.lastDrawAt = now;
+        }
         // 停止时机：
         //   - 普通录制（autoStop=false）→ 手动停止，不因播到曲尾自动停，想录多久录多久；
         //   - 完整录制（autoStop=true）→ 录到曲尾自动停（优先用**音频**时长，谱面 durationMs
         //     只到「最后音符 + 2s」，照它停会把音乐尾巴切掉）。
         const endMs = audioMs && audioMs > 1000 ? audioMs : cfg.doc.durationMs;
-        if (rec.autoStop && tSecRec * 1000 >= endMs) stopRecordingRef.current('end');
+        if (rec.autoStop && getTimeRef.current() * 1000 >= endMs) stopRecordingRef.current('end');
         // 安全兜底：无论哪种录制，超过上限都强制停，避免一直挂着录满内存。
         if (now - rec.startedAt > REC_MAX_MS) stopRecordingRef.current('end');
       }
@@ -1151,6 +1207,111 @@ const BeatmapPreview: React.FC<Props> = ({
   }, [fps?.vsync, fps?.limit]);
 
   // ---- 皮肤：导入 / 记住 / 重置 ----
+  /**
+   * 解码皮肤自带的打击音效采样（`{ normal-hitnormal: dataURL, ... }` → AudioBuffer）。
+   * 采样量很小（通常 2~12 个），皮肤加载时一次性解码，命中时零延迟直接播。
+   */
+  const decodeHitsounds = useCallback(async (audioMap?: Record<string, string>) => {
+    hitBufRef.current.clear();
+    hitNamesRef.current.clear();
+    if (!audioMap) return;
+    // 解码需要 AudioContext：独立窗口 / 内嵌都有，但为兼容「还没用户手势」的极端情况，
+    // 用 try 兜底；解码失败只意味着没有音效，不影响预览。
+    let ctx: AudioContext | null = null;
+    try { ctx = new (window.AudioContext || (window as any).webkitAudioContext)(); } catch { /* ignore */ }
+    const entries = Object.entries(audioMap);
+    await Promise.all(entries.map(async ([name, url]) => {
+      hitNamesRef.current.add(name);
+      if (!ctx) return;
+      try {
+        const resp = await fetch(url);
+        const buf = await resp.arrayBuffer();
+        const ab = await ctx.decodeAudioData(buf);
+        hitBufRef.current.set(name, ab);
+      } catch { /* 单个采样解码失败就跳过，别的照样用 */ }
+    }));
+    // 解码完关掉这个临时 context（释放音频线程；真正的播放 context 由 ensureHitCtx 按需建）
+    if (ctx && ctx !== hitCtxRef.current) { try { ctx.close(); } catch { /* ignore */ } }
+  }, []);
+
+  /** 确保打击音效的 AudioContext 存在（首次命中时懒建，之后复用） */
+  const ensureHitCtx = useCallback((): AudioContext | null => {
+    if (hitCtxRef.current) {
+      if (hitCtxRef.current.state === 'suspended') { void hitCtxRef.current.resume(); }
+      return hitCtxRef.current;
+    }
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      hitCtxRef.current = ctx;
+      if (ctx.state === 'suspended') void ctx.resume();
+      return ctx;
+    } catch { return null; }
+  }, []);
+
+  /** 播放一个打击音效采样（音量按 timing point 的 volume 缩放） */
+  const playHitSound = useCallback((name: string, volume: number) => {
+    const buf = hitBufRef.current.get(name);
+    if (!buf) return;
+    const ctx = ensureHitCtx();
+    if (!ctx || ctx.state !== 'running') return;
+    const src = ctx.createBufferSource();
+    const gain = ctx.createGain();
+    src.buffer = buf;
+    gain.gain.value = Math.max(0, Math.min(1, volume / 100));
+    src.connect(gain); gain.connect(ctx.destination);
+    src.start();
+    src.onended = () => { src.disconnect(); gain.disconnect(); };
+  }, [ensureHitCtx]);
+
+  /** 上一帧命中的播放头（检测回退/seek 用） */
+  const hitLastMsRef = useRef(-1);
+  /** 命中的谱面 notes 引用（切歌时变了就重置游标，避免跨谱面越界/误播） */
+  const hitNotesRef = useRef<OsuDocument['notes'] | null>(null);
+
+  /**
+   * 命中检测：播放头越过音符判定线（timeMs）时触发一次打击音效。
+   * 放在 renderOnce（每帧一次）里调，用**真实播放头**（不用 smoothTime 外推值，
+   * 否则音效会跟画面一样领先/滞后真实音频位置）。
+   */
+  const checkHitSounds = useCallback((nowMs: number) => {
+    if (!hitSound) return;
+    if (hitNamesRef.current.size === 0) return;
+    const cfg = cfgRef.current;
+    const notes = cfg.doc.notes;
+    if (notes.count === 0) return;
+
+    // 切歌：notes 对象变了 → 游标/上一帧时间全部重置
+    if (hitNotesRef.current !== notes) {
+      hitNotesRef.current = notes;
+      hitCursorRef.current = 0;
+      hitLastMsRef.current = -1;
+    }
+
+    // seek / 回退 / 前进跳变：播放头比上次小，或比上次大很多（seek 跳过一段）→
+    // 重定位游标，避免「回退重播」或「seek 后把中间所有音符一口气补播成爆音」。
+    const jump = hitLastMsRef.current < 0 ? 0 : nowMs - hitLastMsRef.current;
+    if (jump < 0 || jump > 500) {
+      hitCursorRef.current = firstNoteAtOrAfter(notes, nowMs);
+    }
+    hitLastMsRef.current = nowMs;
+
+    // 逐个触发：音符按时间有序，游标只进不退
+    const timing = cfg.doc.timing;
+    while (hitCursorRef.current < notes.count && notes.timeMs[hitCursorRef.current] <= nowMs) {
+      const i = hitCursorRef.current;
+      const hs = notes.hitSound[i];
+      const sampleSet = sampleSetAt(timing, notes.timeMs[i]);
+      const vol = volumeAt(timing, notes.timeMs[i]);
+      // 选采样名（finish > clap > whistle > normal），并在当前皮肤里回退
+      const want = pickHitSound(hs, sampleSet);
+      const name = fallbackHitSound(want, (n) => hitBufRef.current.has(n) || hitNamesRef.current.has(n));
+      playHitSound(name, vol);
+      hitCursorRef.current++;
+    }
+  }, [hitSound, playHitSound]);
+  const checkHitSoundsRef = useRef(checkHitSounds);
+  checkHitSoundsRef.current = checkHitSounds;
+
   /** 把 payload 变成可渲染的皮肤，并记住来源路径（下次自动重读） */
   const applySkinPayload = useCallback(async (payload: SkinPayload | null, remember: boolean) => {
     if (!payload) return false;
@@ -1158,6 +1319,10 @@ const BeatmapPreview: React.FC<Props> = ({
     if (!payload.count) { setStatus(`未读到素材：${payload.note || '请确认 skin.ini 与图片在同一目录'}`); return false; }
     const loaded = await loadSkin(payload);
     setSkin(loaded);
+    // ---- 打击音效：解码皮肤自带的 hitsound 采样（normal/soft/drum × hitnormal/whistle/clap/finish）----
+    // 音频解码是异步的，且需要 AudioContext。这里用「首次命中再解码」的懒策略会卡第一下，
+    // 所以在皮肤加载时就把采样都解码好缓存起来（皮肤通常只有 2~12 个采样，量很小）。
+    await decodeHitsounds((payload as any).audio);
     const src = (payload as any).srcPath as string | undefined;
     if (remember && src) {
       setSkinSrc(src);
@@ -1165,7 +1330,7 @@ const BeatmapPreview: React.FC<Props> = ({
     }
     setStatus(`${payload.note ? payload.note + ' · ' : ''}已载入「${loaded.name}」${loaded.imageCount} 张素材`);
     return true;
-  }, []);
+  }, [decodeHitsounds]);
 
   const importSkin = useCallback(async () => {
     const a = api();
@@ -1381,7 +1546,7 @@ const BeatmapPreview: React.FC<Props> = ({
     };
 
     try { recorder.start(1000); } catch { setStatus('录制启动失败'); return; }
-    recRef.current = { recorder, ctx: rctx, w, h, stream, startedAt: performance.now(), mime, ext, fps: recFpsVal, autoStop: fromHead };
+    recRef.current = { recorder, ctx: rctx, w, h, stream, startedAt: performance.now(), mime, ext, fps: recFpsVal, autoStop: fromHead, lastDrawAt: 0, drawError: 0 };
     setRecording(true);
     onRecChangeRef.current?.(true); // 录制期间关掉频谱的「跟随播放头」
 
@@ -1517,6 +1682,9 @@ const BeatmapPreview: React.FC<Props> = ({
           <label className="flex items-center gap-0.5 cursor-pointer"
                  title="自动游玩特效：音符落到判定线就自动「接上」—— 键图换成按下态（KeyImage*D）、判定线起命中光斑、右上角显示连击。取消勾选回到纯预览（音符直接穿下去）。">
             <input type="checkbox" checked={autoFx} onChange={e => setAutoFx(e.target.checked)} /> 打击</label>
+          <label className="flex items-center gap-0.5 cursor-pointer"
+                 title="打击音效：音符命中判定线时播放皮肤自带的 hitsound 采样（normal/soft/drum 组的 hitnormal/whistle/clap/finish）。皮肤没带音效采样时此开关无效果。">
+            <input type="checkbox" checked={hitSound} onChange={e => setHitSound(e.target.checked)} /> 音效</label>
         </div>
         <div className="flex items-center gap-1 flex-wrap text-[10px]" style={{ color: C.dim }}>
           <button onClick={exportFrame} className="flex items-center gap-1 px-1.5 py-1 rounded bg-white/5 hover:bg-white/10" style={{ color: C.text }}>
