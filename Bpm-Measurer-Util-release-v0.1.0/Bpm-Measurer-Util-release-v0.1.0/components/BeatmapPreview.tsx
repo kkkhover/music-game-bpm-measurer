@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { X, Download, Film, Disc3, Music4, Square, Grid3X3, Eye, Palette, Info, RotateCcw, PictureInPicture2 } from 'lucide-react';
+import { X, Download, Film, Disc3, Music4, Square, Grid3X3, Eye, Palette, Info, RotateCcw, PictureInPicture2, ChevronDown } from 'lucide-react';
 import type { OsuDocument } from '../utils/osuBeatmap';
 import { firstNoteAtOrAfter } from '../utils/osuBeatmap';
 import { buildSvTimeline } from '../utils/svTimeline';
@@ -15,6 +15,8 @@ import { recSizePerMinute } from '../utils/settings';
 import { safeFileName } from '../utils/exportName';
 import { stepClock, newClock } from '../utils/previewClock';
 import { pickHitSound, fallbackHitSound } from '../utils/hitSound';
+import { SNAP_DIVS, snapTimeMs, loadSnapDiv } from '../utils/snapGrid';
+import { WcRecorder } from '../utils/wcRecorder';
 import type { PatchPoint } from '../utils/osuPatch';
 import type { PreviewCommand } from '../utils/previewBridge';
 
@@ -24,7 +26,8 @@ const C = {
   bg: '#141420', panel: '#1c1c2c', line: '#3c3c55',
   col: '#1e1e30', colAlt: '#222236',
   note: '#c8c8eb', ln: '#9696c3', outline: '#5a5a7d',
-  grid: '#34344c', red: '#dc3c3c', green: '#3cc83c', both: '#f59e0b',
+  grid: '#34344c', gridSub: '#272740', gridMain: '#4a4a6e',
+  red: '#dc3c3c', green: '#3cc83c', both: '#f59e0b',
   pink: '#ff66aa', blue: '#66b2ff', dim: '#8282a0', text: '#e5e7eb',
 };
 
@@ -55,6 +58,15 @@ interface Props {
   /** 录制音频流（主窗口的 masterGain → MediaStreamDestination）。
    *  独立窗口没有音频图，拿不到就只录画面。 */
   getAudioStream?: () => MediaStream | null;
+  /**
+   * WebCodecs「音画完全同步」录制用的**原始整曲 PCM**。
+   * 返回 null 的场景会降级回 MediaRecorder：变速播放（实际输出 ≠ 原始 buffer）、
+   * 节拍器入录（音轨里要多一层实时合成）、独立窗口（AudioBuffer 无法跨窗口传递）。
+   */
+  getRecordAudio?: () => AudioBuffer | null;
+  /** 主窗口的 AudioContext：打击音效共用它，避免多个 context 抢音频设备造成爆音。
+   *  独立窗口拿不到时才自建一个（只建一次）。 */
+  getAudioContext?: () => AudioContext | null;
   /** 主窗口的播放状态。传了它，暂停那一刻就**精确**锁死画面（不用等播放头"看起来不动"）；
    *  不传（或独立窗口还没收到）则退回停滞检测，最多多走一帧。 */
   playing?: boolean;
@@ -90,6 +102,52 @@ const REC_DEF_FPS = 60;
 const REC_DEF_KBPS = 2000;
 const REC_AUDIO_KBPS = 128;
 const REC_MAX_MS = 30 * 60 * 1000; // 安全上限：半小时自动停，避免一直挂着录满内存
+
+const SNAP_KEY = 'bpm.preview.snap.v1';
+function loadSnap(): number { return loadSnapDiv(SNAP_KEY); }
+
+/** 最近一帧的「屏幕坐标 ↔ 内容时间」映射，供点击时反算（每帧刷新，点击读的是看到的那一帧） */
+interface FrameMap {
+  fc: FrameCache;
+  L: ReturnType<typeof buildSvTimeline>;
+  pps: number;
+  posNow: number;
+  nowMs: number;
+}
+
+/** 一次录制会话。engine='wc' 走 WebCodecs 显式时间戳（音画完全同步），
+ *  engine='mr' 是浏览器内建 MediaRecorder（变速 / 节拍器入录 / 独立窗口时降级用）。 */
+interface RecSession {
+  ctx: CanvasRenderingContext2D;
+  recCanvas: HTMLCanvasElement;
+  w: number; h: number;
+  fps: number; kbps: number;
+  startedAt: number;
+  fromHead: boolean;
+  /** 录制起点的内容时间（秒）：WC 的视频/音频时间戳都以它为 0 */
+  startContent: number;
+  endContent: number;
+  autoStop: boolean;
+  engine: 'wc' | 'mr';
+  /** WC：录制启动瞬间的整曲 PCM（合成音轨用） */
+  audioBuffer: AudioBuffer | null;
+  wc: WcRecorder | null;
+  /** WC：最后写入的帧号（按内容时间网格算，可跳号 —— 跳号 = 播放器保持上一帧） */
+  lastFrame: number;
+  /** WC：停止后正在合成，渲染循环不再抓帧 */
+  synthesizing: boolean;
+  /** 录制画布按录制帧率节流重绘（OBS 帧节奏器 + lazer 误差累积补偿） */
+  lastDrawAt: number;
+  drawError: number;
+  // ---- MediaRecorder 专用 ----
+  recorder: MediaRecorder | null;
+  stream: MediaStream | null;
+  audioTracks: MediaStreamTrack[];
+  mime: string;
+  ext: string;
+  withAudio: boolean;
+  inclClick: boolean;
+}
 
 /** timing 里「最后一个 timeMs <= t」的采样组（sampleSet，1=normal 2=soft 3=drum） */
 function sampleSetAt(timing: { timeMs: number; sampleSet: number }[], tMs: number): number {
@@ -336,7 +394,7 @@ function holdBodySprite(
 
 const BeatmapPreview: React.FC<Props> = ({
   doc, points, getPlayheadTime, onClose, fps, onCommand, onDetach, detached = false,
-  recHeight, recFps, recKbps, getAudioStream,
+  recHeight, recFps, recKbps, getAudioStream, getRecordAudio, getAudioContext,
   playing, audioMs, recordMetronome = false, onRecordMetronomeChange, onRecordingChange,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -366,6 +424,30 @@ const BeatmapPreview: React.FC<Props> = ({
   const [bpmScale, setBpmScale] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
   const [showLines, setShowLines] = useState(true);
+  /** 网格吸附分母（1/1 ~ 1/16）：既决定细分线密度，也决定点击空白处的吸附精度和 note 落点 */
+  const [snapDiv, setSnapDiv] = useState<number>(loadSnap);
+  const [snapOpen, setSnapOpen] = useState(false);
+  /** 下拉菜单用 fixed 定位：小窗最外层是 overflow-hidden，普通绝对定位会被裁掉 */
+  const [snapMenuPos, setSnapMenuPos] = useState<{ left: number; top: number } | null>(null);
+  const snapBtnRef = useRef<HTMLButtonElement>(null);
+  const snapMenuRef = useRef<HTMLDivElement>(null);
+  const toggleSnapMenu = useCallback(() => {
+    if (snapOpen) { setSnapOpen(false); return; }
+    const r = snapBtnRef.current?.getBoundingClientRect();
+    if (r) setSnapMenuPos({ left: Math.max(4, r.left), top: r.bottom + 4 });
+    setSnapOpen(true);
+  }, [snapOpen]);
+  // 点击菜单外任意处收起（菜单是 fixed 挂出来的，得自己管生命周期）
+  useEffect(() => {
+    if (!snapOpen) return;
+    const close = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (snapBtnRef.current?.contains(t) || snapMenuRef.current?.contains(t)) return;
+      setSnapOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [snapOpen]);
   /** 自动游玩特效：音符落到判定线就"接上"（键图按下态 + 命中光斑 + 连击数） */
   const [autoFx, setAutoFx] = useState(true);
   /** 打击音效：音符命中判定线时播放皮肤自带的 hitsound 采样（normal-hitnormal 等） */
@@ -378,21 +460,10 @@ const BeatmapPreview: React.FC<Props> = ({
   skinSrcRef.current = skinSrc;
   const [status, setStatus] = useState('');
   const [recording, setRecording] = useState(false);
-  const recRef = useRef<{
-    recorder: MediaRecorder; ctx: CanvasRenderingContext2D; w: number; h: number;
-    stream: MediaStream; startedAt: number; mime: string; ext: string;
-    /** 这次录制的目标帧率：渲染循环按它保底，避免录 60fps 却只画 30 帧 */
-    fps: number;
-    /** 是否在「曲尾」自动停止：仅「完整录制」为 true；普通录制手动停止（想录多久录多久） */
-    autoStop: boolean;
-    /** 录制画布上一次重绘的墙钟（performance.now，ms）。录制画布按录制帧率节流重绘，
-     *  不跟预览帧率走 —— 预览 120fps 时省一半离屏绘制开销（OBS「帧节奏器」思想）。 */
-    lastDrawAt: number;
-    /** 录制帧率的节流误差累积（lazer ThrottledFrameClock 的 accumulatedSleepError 思想）：
-     *  每帧把「实际间隔 - 目标间隔」的差累加，下次用「目标间隔 - 误差」补偿，
-     *  让录制帧率长期严格等于目标，不因 rAF 抖动而漂移。 */
-    drawError: number;
-  } | null>(null);
+  const recRef = useRef<RecSession | null>(null);
+  /** 启动中哨兵：WcRecorder.create 是 async，await 期间 recRef 还是 null，
+   *  连点两下「录制」会开出两个会话。try/finally 保证任何分支都会清掉它。 */
+  const recStartingRef = useRef(false);
   const chunksRef = useRef<Blob[]>([]);
   /** 组件已卸载：卸载时停掉的录制不要再弹「另存为」（用户只是关了预览） */
   const aliveRef = useRef(true);
@@ -436,15 +507,18 @@ const BeatmapPreview: React.FC<Props> = ({
 
   interface Cfg {
     showGrid: boolean; showLines: boolean; autoFx: boolean; scrollSpeed: number;
+    /** 网格细分分母（1/1~1/16） */
+    snapDiv: number;
     tl: ReturnType<typeof buildSvTimeline>; doc: OsuDocument;
     skin: SkinStyle | null; rs: ResolvedSkin | null;
   }
-  const cfgRef = useRef<Cfg>({ showGrid, showLines, autoFx, scrollSpeed, tl, doc, skin, rs });
+  const cfgRef = useRef<Cfg>({ showGrid, showLines, autoFx, scrollSpeed, snapDiv, tl, doc, skin, rs });
   // 逐字段赋值：App 每 100ms 推一次 UI 状态时，不制造新对象，也不触发重绘
   cfgRef.current.showGrid = showGrid;
   cfgRef.current.showLines = showLines;
   cfgRef.current.autoFx = autoFx;
   cfgRef.current.scrollSpeed = scrollSpeed;
+  cfgRef.current.snapDiv = snapDiv;
   cfgRef.current.tl = tl;
   cfgRef.current.doc = doc;
   cfgRef.current.skin = skin;
@@ -455,6 +529,13 @@ const BeatmapPreview: React.FC<Props> = ({
     verRef.current = (verRef.current + 1) % 1_000_000;
     spriteRef.current = new WeakMap();
   }, [showGrid, showLines, autoFx, scrollSpeed, tl, doc, skin, rs]);
+
+  // 网格细分是每帧动态描的，不在静态层里 —— 改分母只需标脏重画一帧，不必重建精灵缓存。
+  // 单独标脏很重要：暂停时播放头不动，renderOnce 会因「没变化」跳过重绘，网格看着像没反应。
+  useEffect(() => {
+    dirtyRef.current = true;
+    try { localStorage.setItem(SNAP_KEY, String(snapDiv)); } catch { /* ignore */ }
+  }, [snapDiv]);
 
   // ---- 小窗拖动 / 八向缩放：直接改 DOM，零 React 重渲染；松手才提交并持久化 ----
   useEffect(() => {
@@ -743,16 +824,22 @@ const BeatmapPreview: React.FC<Props> = ({
   const hudAccRef = useRef<HTMLSpanElement>(null);
   /** 每帧复用的可见音符数组（避免 120Hz 下每秒分配上百个数组） */
   const visScratchRef = useRef<number[]>([]);
+  /** 最近一帧的坐标映射：单击画布时把 y 反算成内容时间 / 命中 note */
+  const frameMapRef = useRef<FrameMap | null>(null);
   /** 自动游玩特效的每列状态（复用，长度按键数变化时重建） */
   const fxRef = useRef<AutoPlayState>({
     flash: new Float32Array(0), pressed: new Uint8Array(0), held: new Uint8Array(0),
   });
   /**
-   * 打击音效：独立的 AudioContext（短音效专用，与主窗口音乐图解耦）。
-   * 首次命中才创建 —— 浏览器要求 AudioContext 在用户手势后才能出声，
-   * 预览打开本身就是用户操作，但独立窗口/异步加载时延迟创建更稳。
+   * 打击音效的 AudioContext：优先**复用主窗口的音乐 AudioContext**。
+   * 之前这里自建独立 context，两个 context 同时驱动音频设备会争用输出流，
+   * 在部分声卡上就是播放过程中周期性的爆音/断音。
    */
   const hitCtxRef = useRef<AudioContext | null>(null);
+  /** 共享输出总线（gain → 压缩器）：和弦/密集连打叠加时压住峰值，避免削波爆音 */
+  const hitBusRef = useRef<{ gain: GainNode; comp: DynamicsCompressorNode } | null>(null);
+  /** 当前正在发声的采样数（上限 6，超出直接丢弃，防止连打把总线打爆） */
+  const hitVoicesRef = useRef(0);
   /** 已解码的 hitsound 采样：采样名 → AudioBuffer */
   const hitBufRef = useRef<Map<string, AudioBuffer>>(new Map());
   /** 当前皮肤有没有 hitsound 采样（没有就不触发，也避免误报「无音效」） */
@@ -793,12 +880,43 @@ const BeatmapPreview: React.FC<Props> = ({
     ctx.rect(layout.viewLeft, viewTopPx, layout.viewRight - layout.viewLeft, viewBotPx - viewTopPx);
     ctx.clip();
 
-    // 节拍网格：所有拍线合成一条 path，一次 stroke（原来每线一次 beginPath/stroke）
+    // 节拍网格：主拍线（1/1）+ 可选细分线（1/2~1/16），各合成一条 path 一次 stroke。
+    // 高 SV 谱面一屏可能上千条线，所以细分线有总量上限（600 条），避免逐线 stroke 拖垮帧率。
     if (cfg.showGrid) {
-      ctx.strokeStyle = C.grid;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
       const reds = L.reds;
+      const div = Math.max(1, cfg.snapDiv || 1);
+      ctx.lineWidth = 1;
+
+      // 1) 细分线：只画「非整拍」的那些（整拍留给下面的主拍线，避免重叠加粗）
+      if (div > 1) {
+        ctx.strokeStyle = C.gridSub;
+        ctx.beginPath();
+        let subCount = 0;
+        for (let ri = 0; ri < reds.length && subCount <= 600; ri++) {
+          const r = reds[ri];
+          const stop = Math.min(tMax, reds[ri + 1]?.tMs ?? tMax);
+          if (stop < tMin) continue;
+          if (r.tMs > tMax) break;
+          const beatMs = 60000 / Math.max(1, r.bpm || L.baseBpm);
+          const sub = beatMs / div;
+          const n0 = Math.max(0, Math.floor((tMin - r.tMs) / sub));
+          const n1 = Math.min(Math.ceil((stop - r.tMs) / sub), n0 + 800);
+          for (let n = n0; n <= n1 && subCount <= 600; n++) {
+            if (n % div === 0) continue;
+            const t = r.tMs + n * sub;
+            if (t > stop) break;
+            const y = yOf(t);
+            if (y < viewTopPx - 2 || y > viewBotPx) continue;
+            ctx.moveTo(x0, y); ctx.lineTo(stageRight, y);
+            subCount++;
+          }
+        }
+        ctx.stroke();
+      }
+
+      // 2) 主拍线：所有拍线合成一条 path，一次 stroke（原来每线一次 beginPath/stroke）
+      ctx.strokeStyle = div > 1 ? C.gridMain : C.grid;
+      ctx.beginPath();
       for (let ri = 0; ri < reds.length; ri++) {
         const r = reds[ri];
         const stop = Math.min(tMax, reds[ri + 1]?.tMs ?? tMax);
@@ -1119,14 +1237,21 @@ const BeatmapPreview: React.FC<Props> = ({
       );
       // 打击音效：用**真实播放头**触发（不用 smoothTime 外推，音效要跟音频位置严格对齐）
       checkHitSoundsRef.current(getTimeRef.current() * 1000);
+      // 缓存这一帧的坐标↔时间映射：单击画布时按「看到的这一帧」反算，暂停点选也准
+      frameMapRef.current = {
+        fc, L: cfg.tl,
+        pps: osuPxPerSec(fc.layout.unit, cfg.scrollSpeed),
+        posNow: cfg.tl.posAt(tSec * 1000),
+        nowMs: tSec * 1000,
+      };
       drawFrameRef.current(ctx, fc, tSec);
       lastT = tSec;
       dirtyRef.current = false;
       lastFrameAt = now;
 
-      // 录制：同一帧按 720p 再画一遍到离屏画布（captureStream 只认这块画布的实际绘制）
+      // 录制：同一帧按录制分辨率再画一遍到离屏画布
       const rec = recRef.current;
-      if (rec) {
+      if (rec && !rec.synthesizing) {
         // ★ 录制画布按**录制帧率**节流重绘，不跟预览帧率走。
         //   预览 vsync（120fps）+ 录制 60fps 时，旧实现每帧都重绘录制画布 → 白做一半。
         //   这里用「误差累积补偿」（参考 osu!lazer 的 ThrottledFrameClock）：
@@ -1134,29 +1259,35 @@ const BeatmapPreview: React.FC<Props> = ({
         //   下次在「目标间隔 - 误差」处重绘，长期严格对齐录制帧率，零漂移。
         const recInterval = 1000 / Math.max(1, rec.fps);
         if (now - rec.lastDrawAt >= recInterval - rec.drawError - 1) {
-          // ★ 录制帧用**真实播放头**（raw），不用 smoothTime 的外推值：
-          //   录制的音轨来自 MediaStreamDestination，它跟 AudioContext.currentTime 实时对齐；
-          //   而 smoothTime 为 120fps 显示平滑做了墙钟外推，画面会略微领先/滞后真实音频位置，
-          //   这个偏差在蓝牙耳机下（音频时钟漂移）会累积，表现就是「录屏延迟越来越高」。
-          //   录制时直接用 raw，让每一帧画面内容严格对应当时的音频位置，音画天然同步。
+          // 录制帧用**真实播放头**（raw），不用 smoothTime 的外推值。
           const tSecRec = getTimeRef.current();
           rec.ctx.setTransform(1, 0, 0, 1, 0, 0);
           const rfc = getFrameRef.current(rec.w, rec.h, 1, cfg.rs, cfg.skin, cfg.doc.keyCount);
           drawFrameRef.current(rec.ctx, rfc, tSecRec);
-          // 把画布下方的数据条（时间 / BPM / SV / 流速 / 连击）也画进录制画面：
-          // 数据条是 HTML 元素、不进 captureStream，录屏时它本来不会出现，这里手动画上。
+          // 数据条是 HTML 元素、不进画布，录屏时手动画上
           drawRecHud(rec.ctx, rec.w, rec.h, hudRef.current);
+
+          // ★ WebCodecs：帧号由**内容时间网格**算出，时间戳 = 帧号/fps（微秒）。
+          //   音轨也按同一「内容时间」切片打时间戳 —— 两轨同源，音画在容器层面就对齐。
+          //   掉帧时帧号跳号即可：播放器会把上一帧保持到下一个时间戳（正确的静止帧），
+          //   既不用补帧，也不会像 MediaRecorder 那样因墙钟抖动累积漂移。
+          if (rec.engine === 'wc' && rec.wc) {
+            const idx = Math.round((tSecRec - rec.startContent) * rec.fps);
+            if (idx >= 0 && idx > rec.lastFrame) {
+              rec.wc.encodeFrame(rec.recCanvas, idx);
+              rec.lastFrame = idx;
+            }
+          }
           rec.drawError += (now - rec.lastDrawAt) - recInterval;
           rec.drawError = Math.max(-recInterval * 2, Math.min(recInterval * 2, rec.drawError));
           rec.lastDrawAt = now;
         }
-        // 停止时机：
-        //   - 普通录制（autoStop=false）→ 手动停止，不因播到曲尾自动停，想录多久录多久；
-        //   - 完整录制（autoStop=true）→ 录到曲尾自动停（优先用**音频**时长，谱面 durationMs
-        //     只到「最后音符 + 2s」，照它停会把音乐尾巴切掉）。
-        const endMs = audioMs && audioMs > 1000 ? audioMs : cfg.doc.durationMs;
-        if (rec.autoStop && getTimeRef.current() * 1000 >= endMs) stopRecordingRef.current('end');
-        // 安全兜底：无论哪种录制，超过上限都强制停，避免一直挂着录满内存。
+        // 停止时机：进度（音频）走到曲尾自动停，优先用音频真实时长，
+        // 谱面 durationMs 只到「最后音符 + 2s」会把音乐尾巴切掉。
+        const endMs = audioMsRef.current && audioMsRef.current > 1000
+          ? audioMsRef.current : cfg.doc.durationMs;
+        if (getTimeRef.current() * 1000 >= endMs) stopRecordingRef.current('end');
+        // 安全兜底：超过上限强制停，避免一直挂着录满内存。
         if (now - rec.startedAt > REC_MAX_MS) stopRecordingRef.current('end');
       }
 
@@ -1207,61 +1338,92 @@ const BeatmapPreview: React.FC<Props> = ({
   }, [fps?.vsync, fps?.limit]);
 
   // ---- 皮肤：导入 / 记住 / 重置 ----
+  /** 确保打击音效的 AudioContext 存在：优先复用主窗口那个，独立窗口才自建（只建一次） */
+  const ensureHitCtx = useCallback((): AudioContext | null => {
+    let ctx = hitCtxRef.current;
+    if (!ctx) {
+      try { ctx = getAudioContext?.() ?? null; } catch { ctx = null; }
+      if (!ctx) {
+        try { ctx = new (window.AudioContext || (window as any).webkitAudioContext)(); }
+        catch { return null; }
+      }
+      hitCtxRef.current = ctx;
+    }
+    if (ctx.state === 'suspended') void ctx.resume();
+    return ctx;
+  }, [getAudioContext]);
+
+  /** 共享输出总线：gain 留 headroom + 压缩器压住和弦叠加的峰值（削波就是爆音） */
+  const ensureHitBus = useCallback((ctx: AudioContext) => {
+    const old = hitBusRef.current;
+    if (old && old.gain.context === ctx) return old;
+    const gain = ctx.createGain();
+    gain.gain.value = 0.7;
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -12;
+    comp.knee.value = 12;
+    comp.ratio.value = 8;
+    comp.attack.value = 0.002;
+    comp.release.value = 0.12;
+    gain.connect(comp);
+    comp.connect(ctx.destination);
+    const bus = { gain, comp };
+    hitBusRef.current = bus;
+    return bus;
+  }, []);
+
   /**
    * 解码皮肤自带的打击音效采样（`{ normal-hitnormal: dataURL, ... }` → AudioBuffer）。
    * 采样量很小（通常 2~12 个），皮肤加载时一次性解码，命中时零延迟直接播。
+   * ★ 不再为解码临时新建/关闭 AudioContext：反复抢占音频设备会让正在播放的音乐爆音。
    */
   const decodeHitsounds = useCallback(async (audioMap?: Record<string, string>) => {
     hitBufRef.current.clear();
     hitNamesRef.current.clear();
     if (!audioMap) return;
-    // 解码需要 AudioContext：独立窗口 / 内嵌都有，但为兼容「还没用户手势」的极端情况，
-    // 用 try 兜底；解码失败只意味着没有音效，不影响预览。
-    let ctx: AudioContext | null = null;
-    try { ctx = new (window.AudioContext || (window as any).webkitAudioContext)(); } catch { /* ignore */ }
+    const ctx = ensureHitCtx();
     const entries = Object.entries(audioMap);
     await Promise.all(entries.map(async ([name, url]) => {
       hitNamesRef.current.add(name);
       if (!ctx) return;
       try {
         const resp = await fetch(url);
-        const buf = await resp.arrayBuffer();
-        const ab = await ctx.decodeAudioData(buf);
+        const ab = await ctx.decodeAudioData(await resp.arrayBuffer());
         hitBufRef.current.set(name, ab);
       } catch { /* 单个采样解码失败就跳过，别的照样用 */ }
     }));
-    // 解码完关掉这个临时 context（释放音频线程；真正的播放 context 由 ensureHitCtx 按需建）
-    if (ctx && ctx !== hitCtxRef.current) { try { ctx.close(); } catch { /* ignore */ } }
-  }, []);
+  }, [ensureHitCtx]);
 
-  /** 确保打击音效的 AudioContext 存在（首次命中时懒建，之后复用） */
-  const ensureHitCtx = useCallback((): AudioContext | null => {
-    if (hitCtxRef.current) {
-      if (hitCtxRef.current.state === 'suspended') { void hitCtxRef.current.resume(); }
-      return hitCtxRef.current;
-    }
-    try {
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      hitCtxRef.current = ctx;
-      if (ctx.state === 'suspended') void ctx.resume();
-      return ctx;
-    } catch { return null; }
-  }, []);
-
-  /** 播放一个打击音效采样（音量按 timing point 的 volume 缩放） */
+  /**
+   * 播放一个打击音效采样。
+   * ★ 2ms 淡入 + 6ms 淡出：wav 采样开头/结尾的波形往往不连续，
+   *   从 0 硬跳到峰值就是「啪」的爆音；包一圈包络即可消除。
+   * ★ 同时发声上限 6：1/16 连打或 7K 和弦时若不限制，十几个采样叠加必然削波。
+   */
   const playHitSound = useCallback((name: string, volume: number) => {
     const buf = hitBufRef.current.get(name);
-    if (!buf) return;
+    if (!buf || hitVoicesRef.current >= 6) return;
     const ctx = ensureHitCtx();
     if (!ctx || ctx.state !== 'running') return;
+    const bus = ensureHitBus(ctx);
     const src = ctx.createBufferSource();
     const gain = ctx.createGain();
     src.buffer = buf;
-    gain.gain.value = Math.max(0, Math.min(1, volume / 100));
-    src.connect(gain); gain.connect(ctx.destination);
-    src.start();
-    src.onended = () => { src.disconnect(); gain.disconnect(); };
-  }, [ensureHitCtx]);
+    const now = ctx.currentTime;
+    const dur = buf.duration;
+    const peak = Math.max(0, Math.min(1, volume / 100)) * 0.85;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(peak, now + 0.002);
+    gain.gain.setValueAtTime(peak, Math.max(now + 0.002, now + dur - 0.006));
+    gain.gain.linearRampToValueAtTime(0.0001, now + dur);
+    src.connect(gain); gain.connect(bus.gain);
+    hitVoicesRef.current++;
+    src.onended = () => {
+      hitVoicesRef.current = Math.max(0, hitVoicesRef.current - 1);
+      try { src.disconnect(); gain.disconnect(); } catch { /* ignore */ }
+    };
+    src.start(now);
+  }, [ensureHitCtx, ensureHitBus]);
 
   /** 上一帧命中的播放头（检测回退/seek 用） */
   const hitLastMsRef = useRef(-1);
@@ -1295,10 +1457,15 @@ const BeatmapPreview: React.FC<Props> = ({
     }
     hitLastMsRef.current = nowMs;
 
-    // 逐个触发：音符按时间有序，游标只进不退
+    // 逐个触发：音符按时间有序，游标只进不退。
+    // ★ 单帧最多播 3 个：7K 和弦或掉帧补播时十几个采样同刻叠加必然削波爆音；
+    //   多余的照样推进游标（不会在下一帧重复触发），只是不发声。
     const timing = cfg.doc.timing;
+    let played = 0;
     while (hitCursorRef.current < notes.count && notes.timeMs[hitCursorRef.current] <= nowMs) {
       const i = hitCursorRef.current;
+      hitCursorRef.current++;
+      if (played >= 3) continue;
       const hs = notes.hitSound[i];
       const sampleSet = sampleSetAt(timing, notes.timeMs[i]);
       const vol = volumeAt(timing, notes.timeMs[i]);
@@ -1306,7 +1473,7 @@ const BeatmapPreview: React.FC<Props> = ({
       const want = pickHitSound(hs, sampleSet);
       const name = fallbackHitSound(want, (n) => hitBufRef.current.has(n) || hitNamesRef.current.has(n));
       playHitSound(name, vol);
-      hitCursorRef.current++;
+      played++;
     }
   }, [hitSound, playHitSound]);
   const checkHitSoundsRef = useRef(checkHitSounds);
@@ -1440,16 +1607,106 @@ const BeatmapPreview: React.FC<Props> = ({
     return { w: Math.max(240, rw), h: Math.max(240, rh) };
   };
 
+  /**
+   * 单击画布 → 播放头跳转到 note 的头部 / 网格线，方便在这个精确位置添加 timing。
+   *
+   * ① 命中正在显示的 note（含 LN 身体）→ 直接跳到 notes.timeMs[i]，这是最有用的一种：
+   *    timing 线必须落在音符头上，肉眼看画面点比在频谱上拖像素准得多。
+   * ② 点在网格线或空白处 → 由 y 反算内容时间（走 SV 位置积分的反函数 timeAtPos，
+   *    高 SV 段也准），再按当前 1/div 分母吸附到最近的细分网格。
+   */
+  const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    setSnapOpen(false);
+    const m = frameMapRef.current;
+    const canvas = canvasRef.current;
+    if (!m || !canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    // CSS 像素 → drawFrame 的逻辑像素（两者 1:1，窗口缩放时按比例换算）
+    const x = (e.clientX - rect.left) * (m.fc.w / rect.width);
+    const y = (e.clientY - rect.top) * (m.fc.h / rect.height);
+    const { layout, cols } = m.fc;
+    const L = m.L;
+    const D = cfgRef.current.doc;
+    const notes = D.notes;
+    const yOf = (tMs: number) => layout.judgeY - (L.posAt(tMs) - m.posNow) * m.pps;
+
+    // 可见窗口与 drawFrame 完全一致（按最长 LN 回看），保证「看到的 note 都能点中」
+    const tMin = m.nowMs - 400;
+    const tMax = Math.min(
+      L.timeAtPos(m.posNow + ((layout.judgeY - layout.viewTop) / m.pps) * 1.03),
+      m.nowMs + 30000, D.durationMs + 5000,
+    );
+    const vis: number[] = [];
+    const visN = fillVisibleNoteIndices(notes, tMin, tMax, 900, vis);
+    let bestT: number | null = null, bestD = Infinity;
+    for (let k = 0; k < visN; k++) {
+      const i = vis[k];
+      const col = notes.column[i];
+      const cx = layout.x[col], cw = layout.width[col];
+      if (x < cx - 2 || x > cx + cw + 2) continue;
+      const y0 = yOf(notes.timeMs[i]);
+      const noteH = cols[col]?.noteH ?? layout.unit * 20;
+      // 普通音符 = 头部一个矩形；LN = 从尾到头的整条身体
+      const top = notes.isLn[i] === 1 ? Math.min(yOf(notes.endMs[i]), y0) : y0 - noteH;
+      if (y < top - 4 || y > y0 + 4) continue;
+      const d = Math.abs(y - y0);
+      if (d < bestD) { bestD = d; bestT = notes.timeMs[i]; }
+    }
+
+    // 没点中 note → 反算时间并吸附到细分网格
+    let targetMs = bestT;
+    if (targetMs === null) {
+      const posClick = m.posNow + (layout.judgeY - y) / m.pps;
+      targetMs = snapTimeMs(L.reds, L.baseBpm, L.timeAtPos(posClick), cfgRef.current.snapDiv);
+    }
+    const dur = (audioMsRef.current || 0) / 1000;
+    let t = Math.max(0, targetMs / 1000);
+    if (dur > 0) t = Math.min(dur, t);
+    cmdRef.current?.({ type: 'seek', t });
+    setStatus(bestT !== null
+      ? `已定位到音符头部 ${t.toFixed(3)}s`
+      : `已定位到 ${t.toFixed(3)}s · 1/${cfgRef.current.snapDiv} 网格`);
+  }, []);
+
   const stopRecording = useCallback((_reason?: string) => {
     const rec = recRef.current;
-    if (!rec) return;
-    recRef.current = null;
+    if (!rec || rec.synthesizing) return;
+    rec.synthesizing = true;
+    rec.endContent = Math.max(rec.startContent, getTimeRef.current());
+    recRef.current = null;                 // 渲染循环立刻停止抓帧
     setRecording(false);
-    onRecChangeRef.current?.(false); // 恢复「跟随播放头」
-    // 停止录制就把播放也停下：用户点"停止"多半是录完了，不想画面继续跑
-    cmdRef.current?.({ type: 'pause' });
-    try { rec.recorder.stop(); } catch { /* 已经停了 */ }
-  }, []);
+    onRecChangeRef.current?.(false);       // 恢复「跟随播放头」
+    cmdRef.current?.({ type: 'pause' });   // 停录制就把播放也停下
+
+    // ---- 降级方案：MediaRecorder 的 onstop 里导出 ----
+    if (rec.engine === 'mr') {
+      try { rec.recorder?.stop(); } catch { /* 已经停了 */ }
+      return;
+    }
+
+    // ---- WebCodecs：视频帧在录制期间已实时编码完，这里只补音轨 + 封装 ----
+    // 不是「后渲染」：没有逐帧重画，只是把已知 PCM 喂给硬件 AAC 编码器（通常 < 1s）。
+    const wc = rec.wc;
+    if (!wc) { setStatus('录制会话异常（编码器丢失）'); return; }
+    const base = `preview-${doc.title || 'beatmap'}${rec.fromHead ? '-full' : ''}.mp4`;
+    void (async () => {
+      try {
+        setStatus('正在合成音画同步视频…');
+        if (rec.audioBuffer) await wc.encodeAudio(rec.audioBuffer, rec.startContent, rec.endContent);
+        const bytes = await wc.finish();
+        if (!aliveRef.current) return;     // 预览已关闭：不弹另存为
+        const mb = bytes.byteLength / 1048576;
+        setStatus(`正在保存（${mb.toFixed(1)} MB）…`);
+        await saveBytes(base, bytes, [{ name: 'MP4 Video', extensions: ['mp4'] }]);
+        setStatus(`已导出音画同步 MP4（${mb.toFixed(1)} MB · ${rec.w}×${rec.h} · ${rec.fps}fps · ${wc.frameCount} 帧）`);
+      } catch (e) {
+        console.warn('[wc] 合成失败：', e);
+        setStatus(`录制合成失败：${String(e)}`);
+        wc.cancel();
+      }
+    })();
+  }, [doc.title]);
   const stopRecordingRef = useRef(stopRecording);
   stopRecordingRef.current = stopRecording;
 
@@ -1459,94 +1716,129 @@ const BeatmapPreview: React.FC<Props> = ({
    *                 false = 从当前播放头位置开始（默认）。
    */
   const startRecording = useCallback(async (fromHead = false) => {
-    if (recRef.current) return;
-    if (typeof MediaRecorder === 'undefined') { setStatus('当前环境不支持录制'); return; }
-    // 完整录制的第一帧必须画在 0 秒：否则 captureStream 头一帧会闪一下当前所在位置
+    if (recRef.current || recStartingRef.current) return;
+    recStartingRef.current = true;
+    try {
     const startT = fromHead ? 0 : Math.max(0, getTimeRef.current());
-    /** 录制启动时的节拍器开关（录制中途再改也不会改已经录进去的那段，状态文字按启动时算） */
+    /** 录制启动时的节拍器开关（录制中途再改也不会改已经录进去的那段） */
     const inclClick = !!recordMetronome;
     const { w, h } = recordSize();
+    const { fps: recFpsVal, kbps } = recCfg();
     const recCanvas = document.createElement('canvas');
     recCanvas.width = w; recCanvas.height = h;
     const rctx = recCanvas.getContext('2d', { alpha: false });
     if (!rctx) { setStatus('录制初始化失败'); return; }
-    // 先画一帧，否则 captureStream 第一帧是空白
+    // 先画一帧：captureStream 的第一帧不能是空白；WC 也要保证 idx=0 有内容
     rctx.setTransform(1, 0, 0, 1, 0, 0);
     try {
       const c = cfgRef.current;
       const fc0 = getFrameRef.current(w, h, 1, c.rs, c.skin, c.doc.keyCount);
       drawFrameRef.current(rctx, fc0, startT);
-      drawRecHud(rctx, w, h, hudRef.current); // 首帧也带上数据条，避免录像开头闪一下没 HUD
+      drawRecHud(rctx, w, h, hudRef.current);
     } catch { /* 首帧失败不致命 */ }
 
-    // ---- 音轨：主窗口的录制混音总线 → MediaStreamDestination ----
-    // 这条流里默认只有音乐；用户在工具条上打开「节拍器」时，节拍器会经一个
-    // 可开关的 GainNode 汇入同一条总线（见 App.tsx 的 clickRecGain），所以录制端
-    // 永远是「一条音轨」，不需要考虑多音轨混合。
-    // 独立预览窗口没有音频图，getAudioStream 拿不到 → 只录画面（状态栏会写"无声"）。
-    let audioTracks: MediaStreamTrack[] = [];
-    try {
-      const as = getAudioStream?.();
-      audioTracks = as ? as.getAudioTracks().filter(t => t.readyState === 'live') : [];
-    } catch { audioTracks = []; }
-    const hasAudio = audioTracks.length > 0;
-
-    // ★ MIME 必须显式声明音频 codec，否则浏览器会**静默丢掉音轨**（mp4 里只剩画面，
-    //   用户以为录上了声音）。所以有音轨时只在「带音频 codec」的列表里挑；
-    //   一个都不支持（极少见）才退回纯视频，并把状态栏改成"无音频"，不撒谎。
-    const MIME_AUDIO = [
-      'video/mp4;codecs=avc1.42E01E,mp4a.40.2', // H.264 + AAC（Chromium 的 mp4 muxer）
-      'video/mp4;codecs=avc1,mp4a.40.2',
-      'video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp8,opus',
-    ];
-    const MIME_VIDEO = [
-      'video/mp4;codecs=avc1.42E01E', 'video/mp4;codecs=avc1', 'video/mp4',
-      'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm',
-    ];
-    const support = (m: string) => { try { return MediaRecorder.isTypeSupported(m); } catch { return false; } };
-    let withAudio = hasAudio;
-    let mime = hasAudio ? MIME_AUDIO.find(support) : undefined;
-    if (!mime) { withAudio = false; mime = MIME_VIDEO.find(support); }
-    if (!mime) { setStatus('当前环境不支持 MP4/WebM 编码'); return; }
-    const ext = mime.includes('mp4') ? 'mp4' : 'webm';
-
-    const { fps: recFpsVal, kbps } = recCfg();
-    let stream: MediaStream;
-    try { stream = recCanvas.captureStream(recFpsVal); } catch { setStatus('画布录制不可用'); return; }
-    // 把音轨挂到同一条流上：MediaRecorder 只吃一个流，音视频必须在同一流里
-    if (withAudio) for (const t of audioTracks) stream.addTrack(t);
-
-    let recorder: MediaRecorder;
-    try {
-      recorder = new MediaRecorder(stream, {
-        mimeType: mime,
-        videoBitsPerSecond: kbps * 1000,
-        audioBitsPerSecond: REC_AUDIO_KBPS * 1000,
+    // ---- 首选 WebCodecs：视频实时编码 + 音频按同一内容时间打戳，音画完全同步 ----
+    // 降级条件：原始 PCM 拿不到（变速 / 独立窗口）、节拍器入录（音轨多一层实时合成）、
+    // 或当前 Chromium 不支持 H.264/AAC 编码。降级后仍用原来的 MediaRecorder，功能不丢。
+    const rawAudio = getRecordAudio?.() ?? null;
+    let wc: WcRecorder | null = null;
+    let downgrade = '';
+    if (!rawAudio) downgrade = '无原始音轨（变速/独立窗口）';
+    else if (inclClick) downgrade = '节拍器入录';
+    else {
+      wc = await WcRecorder.create({
+        width: w, height: h, fps: recFpsVal,
+        videoBitrate: kbps * 1000,
+        sampleRate: rawAudio.sampleRate,
+        numberOfChannels: Math.min(2, rawAudio.numberOfChannels),
+        audioBitrate: REC_AUDIO_KBPS * 1000,
       });
-    } catch {
-      try { recorder = new MediaRecorder(stream); } catch { setStatus('录制启动失败'); return; }
+      if (!wc) downgrade = '当前环境不支持 WebCodecs 编码';
     }
-    chunksRef.current = [];
-    recorder.ondataavailable = e => { if (e.data.size) chunksRef.current.push(e.data); };
-    recorder.onstop = async () => {
-      // 只停视频轨：音轨是主窗口共享的那条，停了以后就再也录不进声音了
-      stream.getVideoTracks().forEach(t => t.stop());
-      for (const t of audioTracks) { try { stream.removeTrack(t); } catch { /* ignore */ } }
-      const blob = new Blob(chunksRef.current, { type: mime });
-      chunksRef.current = [];
-      if (!aliveRef.current) return; // 关闭预览时顺带停的录制：不落盘、不打扰
-      if (!blob.size) { setStatus('录制为空（可能没开始播放）'); return; }
-      const mb = blob.size / 1048576;
-      setStatus(`正在保存录制（${mb.toFixed(1)} MB）…`);
-      const base = `preview-${doc.title || 'beatmap'}${fromHead ? '-full' : ''}.${ext}`;
-      await saveBytes(base, new Uint8Array(await blob.arrayBuffer()),
-        [{ name: ext === 'mp4' ? 'MP4 Video' : 'WebM Video', extensions: [ext] }]);
-      setStatus(`录制已导出（${mb.toFixed(1)} MB · ${w}×${h} · ${ext}${withAudio ? ' · 含音频' : ' · 无音频'}${withAudio && inclClick ? ' + 节拍器' : ''}）`);
+    const engine: 'wc' | 'mr' = wc ? 'wc' : 'mr';
+
+    const session: RecSession = {
+      ctx: rctx, recCanvas, w, h, fps: recFpsVal, kbps,
+      startedAt: performance.now(), fromHead,
+      startContent: startT, endContent: startT,
+      autoStop: fromHead, engine,
+      audioBuffer: engine === 'wc' ? rawAudio : null,
+      wc, lastFrame: -1, synthesizing: false,
+      lastDrawAt: 0, drawError: 0,
+      recorder: null, stream: null, audioTracks: [],
+      mime: engine === 'wc' ? 'video/mp4' : '',
+      ext: 'mp4', withAudio: engine === 'wc', inclClick,
     };
 
-    try { recorder.start(1000); } catch { setStatus('录制启动失败'); return; }
-    recRef.current = { recorder, ctx: rctx, w, h, stream, startedAt: performance.now(), mime, ext, fps: recFpsVal, autoStop: fromHead, lastDrawAt: 0, drawError: 0 };
+    // ---- 降级分支：浏览器内建 MediaRecorder（captureStream + 实时混音总线）----
+    if (engine === 'mr') {
+      if (typeof MediaRecorder === 'undefined') { setStatus('当前环境不支持录制'); return; }
+      let audioTracks: MediaStreamTrack[] = [];
+      try {
+        const as = getAudioStream?.();
+        audioTracks = as ? as.getAudioTracks().filter(t => t.readyState === 'live') : [];
+      } catch { audioTracks = []; }
+      const hasAudio = audioTracks.length > 0;
+
+      // ★ MIME 必须显式声明音频 codec，否则 Chromium 会**静默丢掉音轨**
+      const MIME_AUDIO = [
+        'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+        'video/mp4;codecs=avc1,mp4a.40.2',
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+      ];
+      const MIME_VIDEO = [
+        'video/mp4;codecs=avc1.42E01E', 'video/mp4;codecs=avc1', 'video/mp4',
+        'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm',
+      ];
+      const support = (m: string) => { try { return MediaRecorder.isTypeSupported(m); } catch { return false; } };
+      let withAudio = hasAudio;
+      let mime = hasAudio ? MIME_AUDIO.find(support) : undefined;
+      if (!mime) { withAudio = false; mime = MIME_VIDEO.find(support); }
+      if (!mime) { setStatus('当前环境不支持 MP4/WebM 编码'); wc?.cancel(); return; }
+      const ext = mime.includes('mp4') ? 'mp4' : 'webm';
+
+      let stream: MediaStream;
+      try { stream = recCanvas.captureStream(recFpsVal); } catch { setStatus('画布录制不可用'); return; }
+      if (withAudio) for (const t of audioTracks) stream.addTrack(t);
+
+      let recorder: MediaRecorder;
+      try {
+        recorder = new MediaRecorder(stream, {
+          mimeType: mime,
+          videoBitsPerSecond: kbps * 1000,
+          audioBitsPerSecond: REC_AUDIO_KBPS * 1000,
+        });
+      } catch {
+        try { recorder = new MediaRecorder(stream); } catch { setStatus('录制启动失败'); return; }
+      }
+      chunksRef.current = [];
+      recorder.ondataavailable = e => { if (e.data.size) chunksRef.current.push(e.data); };
+      recorder.onstop = async () => {
+        // 只停视频轨：音轨是主窗口共享的那条，停了以后就再也录不进声音了
+        stream.getVideoTracks().forEach(t => t.stop());
+        for (const t of audioTracks) { try { stream.removeTrack(t); } catch { /* ignore */ } }
+        const blob = new Blob(chunksRef.current, { type: mime });
+        chunksRef.current = [];
+        if (!aliveRef.current) return;
+        if (!blob.size) { setStatus('录制为空（可能没开始播放）'); return; }
+        const mb = blob.size / 1048576;
+        setStatus(`正在保存录制（${mb.toFixed(1)} MB）…`);
+        const base = `preview-${doc.title || 'beatmap'}${fromHead ? '-full' : ''}.${ext}`;
+        await saveBytes(base, new Uint8Array(await blob.arrayBuffer()),
+          [{ name: ext === 'mp4' ? 'MP4 Video' : 'WebM Video', extensions: [ext] }]);
+        setStatus(`录制已导出（${mb.toFixed(1)} MB · ${w}×${h} · ${ext}${withAudio ? ' · 含音频' : ' · 无音频'}${withAudio && inclClick ? ' + 节拍器' : ''}）`);
+      };
+      try { recorder.start(1000); } catch { setStatus('录制启动失败'); return; }
+      session.recorder = recorder;
+      session.stream = stream;
+      session.audioTracks = audioTracks;
+      session.mime = mime;
+      session.ext = ext;
+      session.withAudio = withAudio;
+    }
+
+    recRef.current = session;
     setRecording(true);
     onRecChangeRef.current?.(true); // 录制期间关掉频谱的「跟随播放头」
 
@@ -1554,12 +1846,16 @@ const BeatmapPreview: React.FC<Props> = ({
      *   旧实现先发 seek，App 的 handleSeek 会 stop() → cancelAnimationFrame 把播放循环干掉；
      *   紧接着的 play() 又把 isPlaying 设回 true，两次 setState 在同一个批处理里被折叠成
      *   "一直是 true" → 播放循环的 effect 不重建 → 声音在放，播放头/录制画面却冻死。
-     *   （播放中按「录制」必中，暂停时按反而正常。）
      *   现在交给 App 一次处理：位置直接改；正在播就换声源（循环不动）、暂停中就开播。 */
     cmdRef.current?.({ type: 'recordFrom', t: startT });
     const mbPerMin = recSizePerMinute(kbps).toFixed(0);
-    setStatus(`${fromHead ? '完整录制中' : '录制中'} ${w}×${h} ${recFpsVal}fps · ${(kbps / 1000).toFixed(1)}Mbps${withAudio ? (inclClick ? ' · 含节拍器' : '') : ' · 无声（独立窗口无音频）'}（每分钟 ≈ ${mbPerMin}MB）`);
-  }, [doc.title, recHeight, recFps, recKbps, getAudioStream, recordMetronome]);
+    setStatus(engine === 'wc'
+      ? `音画同步录制中 ${w}×${h} ${recFpsVal}fps · ${(kbps / 1000).toFixed(1)}Mbps（实时编码，停止即合成 · 每分钟 ≈ ${mbPerMin}MB）`
+      : `实时录制中 ${w}×${h} ${recFpsVal}fps · 降级：${downgrade}（每分钟 ≈ ${mbPerMin}MB）`);
+    } finally {
+      recStartingRef.current = false;
+    }
+  }, [doc.title, recHeight, recFps, recKbps, getAudioStream, getRecordAudio, recordMetronome]);
 
   const toggleRecord = useCallback(() => {
     if (recRef.current) stopRecording();
@@ -1581,7 +1877,10 @@ const BeatmapPreview: React.FC<Props> = ({
     aliveRef.current = false;
     onRecChangeRef.current?.(false); // 卸载（关预览）时别把「跟随播放头」永久留在关掉的状态
     const rec = recRef.current;
-    if (rec) { try { rec.recorder.stop(); } catch { /* noop */ } }
+    if (rec) {
+      try { rec.recorder?.stop(); } catch { /* noop */ }
+      rec.wc?.cancel();
+    }
   }, []);
 
   const panelStyle: React.CSSProperties = detached
@@ -1624,7 +1923,9 @@ const BeatmapPreview: React.FC<Props> = ({
 
       {/* 竖屏画布：画布内只有谱面本身，没有任何文字（落下的音符不会被压住，录像也干净） */}
       <div ref={wrapRef} className="flex-1 min-h-0 relative">
-        <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
+        <canvas ref={canvasRef} className="absolute inset-0 w-full h-full cursor-crosshair"
+                onClick={handleCanvasClick}
+                title="单击音符 → 播放头跳到音符头部；单击网格/空白 → 按当前 1/N 网格吸附定位（方便添加 timing）" />
       </div>
 
       {/* 数据条：放在画布**下方**，值由渲染循环节流写入（不走 React），不遮挡预览 */}
@@ -1675,8 +1976,34 @@ const BeatmapPreview: React.FC<Props> = ({
           <label className="flex items-center gap-0.5 cursor-pointer"
                  title="BPM 参与流速：v=(BPM/基准BPM)×SV。osu!mania 里谱面内 BPM 一改流速就变，作者会用绿线 SV=原BPM/新BPM 补偿 —— 勾上这里，橙线处流速才会保持 100%。取消勾选只看纯 SV。">
             <input type="checkbox" checked={bpmScale} onChange={e => setBpmScale(e.target.checked)} /> BPM</label>
-          <label className="flex items-center gap-0.5 cursor-pointer"><Grid3X3 size={11} />
-            <input type="checkbox" checked={showGrid} onChange={e => setShowGrid(e.target.checked)} /> 网格</label>
+          <div className="relative flex items-center gap-0.5">
+            <label className="flex items-center gap-0.5 cursor-pointer"><Grid3X3 size={11} />
+              <input type="checkbox" checked={showGrid} onChange={e => setShowGrid(e.target.checked)} /> 网格</label>
+            <button ref={snapBtnRef} onClick={toggleSnapMenu}
+                    className="flex items-center gap-0.5 px-1 py-0.5 rounded hover:bg-white/10 font-mono"
+                    style={{ color: snapDiv > 1 ? C.blue : C.dim }}
+                    title="折叠选择网格吸附精度 1/1 ~ 1/16 分；单击画布空白处也会按它吸附">
+              1/{snapDiv} <ChevronDown size={9} />
+            </button>
+            {snapOpen && snapMenuPos && (
+              <div ref={snapMenuRef}
+                   className="fixed z-[200] py-1 rounded border shadow-xl"
+                   style={{ left: snapMenuPos.left, top: snapMenuPos.top,
+                            background: C.panel, borderColor: C.line, minWidth: 112 }}>
+                <div className="px-2 pb-1 text-[9px]" style={{ color: C.dim }}>网格吸附精度</div>
+                {SNAP_DIVS.map(d => (
+                  <button key={d} onClick={() => { setSnapDiv(d); setSnapOpen(false); }}
+                          className="w-full text-left px-2 py-1 text-[10px] hover:bg-white/10 flex items-center justify-between gap-2"
+                          style={{ color: d === snapDiv ? C.blue : C.text }}>
+                    <span className="font-mono">1/{d} 分</span>
+                    <span style={{ color: C.dim }}>
+                      {d === 1 ? '整拍' : (d === 3 || d === 6 || d === 12) ? '三连' : ''}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <label className="flex items-center gap-0.5 cursor-pointer">
             <input type="checkbox" checked={showLines} onChange={e => setShowLines(e.target.checked)} /> 线</label>
           <label className="flex items-center gap-0.5 cursor-pointer"
@@ -1691,10 +2018,10 @@ const BeatmapPreview: React.FC<Props> = ({
             <Download size={11} /> 画面</button>
           <button onClick={exportStrip} className="flex items-center gap-1 px-1.5 py-1 rounded bg-white/5 hover:bg-white/10" style={{ color: C.text }}>
             <Download size={11} /> 长图</button>
-          {/* 一键录制：从当前播放头位置自动开播，720p60 MP4 */}
+          {/* 一键录制：WebCodecs 实时编码，视频帧与音轨共用内容时间轴 → 音画完全同步 */}
           <button onClick={toggleRecord} className="flex items-center gap-1 px-1.5 py-1 rounded hover:bg-white/10"
                   style={{ color: recording ? C.red : C.text }}
-                  title={`点一下就从当前进度开始自动播放并录制：${recCfg().height}p · ${recCfg().fps}fps · ${(recCfg().kbps / 1000).toFixed(1)}Mbps · 含音乐（分辨率/码率/帧率在设置里调）`}>
+                  title={`音画完全同步录制：按下即刻开播并实时编码 MP4，视频帧与音轨按同一内容时间轴打时间戳，不会随时间漂移。${recCfg().height}p · ${recCfg().fps}fps · ${(recCfg().kbps / 1000).toFixed(1)}Mbps（设置里可调）；变速 / 节拍器入录 / 独立窗口时自动降级为内建实时录制`}>
             {recording ? <Square size={11} /> : <Film size={11} />} {recording ? '停止' : '录制'}</button>
           {/* 完整录制：从头（0 秒）一直录到曲尾，自动停止并导出 xxx-full.mp4 */}
           <button onClick={recordFull} disabled={recording}

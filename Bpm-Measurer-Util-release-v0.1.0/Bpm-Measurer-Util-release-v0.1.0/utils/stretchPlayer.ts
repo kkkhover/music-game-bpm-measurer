@@ -86,18 +86,26 @@ function createPitchShifter(
   //   大幅 seek/暂停时若正好切在波形高电平处，直接 disconnect 会让电平从峰值瞬断到 0，
   //   听到一声爆音。这里在断开前先把 gain 快速淡到 0（~20ms），人耳几乎无感却听不到啪声。
   const gainNode = ctx.createGain();
-  gainNode.gain.value = 1;
+  // ★ 10ms 淡入：seek / 录制起点切换时，旧源还在 20ms 淡出，新源若立刻满音量
+  //   会造成两段不同位置的音频重叠叠加 → 削波「啪」声。交叉淡化把重叠段压下去。
+  gainNode.gain.setValueAtTime(0.0001, ctx.currentTime);
+  gainNode.gain.linearRampToValueAtTime(1, ctx.currentTime + 0.01);
   gainNode.connect(to);
   let fadeTimer: number | null = null;
 
   const guard = () => {
     if (ended) return;
     ended = true;
-    // 播到末尾：立刻把内部节点静音停掉，阻止它继续空转 / 反复 onEnd 吐出残留噪声（爆音）
+    // 曲尾也要淡出再断：旧实现直接 disconnect，正好切在波形峰值就是一声爆音。
+    const now = ctx.currentTime;
+    try { gainNode.gain.cancelScheduledValues(now); } catch { /* 忽略 */ }
+    try { gainNode.gain.setValueAtTime(gainNode.gain.value, now); } catch { /* 忽略 */ }
+    try { gainNode.gain.linearRampToValueAtTime(0.0001, now + 0.015); } catch { /* 忽略 */ }
+    // 先掐掉内部回调（阻止继续吐残留噪声），gain 留到淡出结束再断开
     if (scriptNode) {
       try { scriptNode.onaudioprocess = null; scriptNode.disconnect(); } catch { /* 忽略 */ }
     }
-    try { gainNode.disconnect(); } catch { /* 忽略 */ }
+    window.setTimeout(() => { try { gainNode.disconnect(); } catch { /* 忽略 */ } }, 20);
     onEnd?.();
   };
   shifter = new PitchShifter(ctx, buffer, BUFFER_SIZE, guard);
@@ -126,8 +134,10 @@ function createPitchShifter(
         // 停掉也把 onEnd 关掉，避免「手动 stop」误触发「播完」逻辑
         ended = true;
         // 淡出 20ms 后再真正断开：消除硬切断爆音。淡出期间这个源已脱离主逻辑（shifter=null），
-        // 但 gain 仍连着，靠定时器收尾。
+        // 但 gain 仍连着，靠定时器收尾。cancelScheduledValues 先把开头的淡入调度清掉，
+        // 否则 seek 后 10ms 内就 stop 时，淡入会覆盖淡出，反而又是一声「啪」。
         const now = ctx.currentTime;
+        try { gainNode.gain.cancelScheduledValues(now); } catch { /* 忽略 */ }
         try { gainNode.gain.setValueAtTime(gainNode.gain.value, now); } catch { /* 忽略 */ }
         try { gainNode.gain.linearRampToValueAtTime(0.0001, now + 0.02); } catch { /* 忽略 */ }
         if (fadeTimer !== null) { clearTimeout(fadeTimer); }
@@ -154,7 +164,8 @@ function createNativeFallback(
 ): StretchHandle {
   const source = ctx.createBufferSource();
   const gainNode = ctx.createGain();
-  gainNode.gain.value = 1;
+  gainNode.gain.setValueAtTime(0.0001, ctx.currentTime);
+  gainNode.gain.linearRampToValueAtTime(1, ctx.currentTime + 0.01);
   source.buffer = buffer;
   source.playbackRate.value = rate;
   source.connect(gainNode);
@@ -166,6 +177,7 @@ function createNativeFallback(
     stop() {
       // 淡出 20ms 再停，消除硬切断爆音
       const now = ctx.currentTime;
+      try { gainNode.gain.cancelScheduledValues(now); } catch { /* 忽略 */ }
       try { gainNode.gain.setValueAtTime(gainNode.gain.value, now); } catch { /* 忽略 */ }
       try { gainNode.gain.linearRampToValueAtTime(0.0001, now + 0.02); } catch { /* 忽略 */ }
       try { source.stop(now + 0.025); } catch { /* 已停 */ }

@@ -90,6 +90,7 @@
     }
   },
   "dependencies": {
+    "mp4-muxer": "^5.2.2",
     "soundtouchjs": "^0.3.0"
   }
 }

@@ -594,6 +594,20 @@ for (const f of files) {
 ok(hsParsedOk, '所有谱面的 notes.hitSound 长度与 count 一致');
 ok(hsNonZero > 0, `样本里有 ${hsNonZero} 个音符带非零 hitSound 位（有音色信息可播）`);
 
+// ===== 网格吸附 1/1 ~ 1/16 =====
+console.log('\n=== 网格吸附（snapGrid）===');
+const SG = require(path.join(ROOT, 'utils/snapGrid.ts'));
+ok(SG.SNAP_DIVS.length === 8 && SG.SNAP_DIVS[0] === 1 && SG.SNAP_DIVS[7] === 16,
+  '分母档位 1,2,3,4,6,8,12,16 共 8 档');
+const snapReds = [{ tMs: 0, bpm: 120 }, { tMs: 2000, bpm: 240 }]; // 前段 500ms/拍，后段 250ms/拍
+ok(SG.snapTimeMs(snapReds, 120, 130, 1) === 130, '1/1 档不细分：原样返回');
+ok(SG.snapTimeMs(snapReds, 120, 130, 4) === 125, '1/4 档：130ms → 125ms');
+ok(SG.snapTimeMs(snapReds, 120, 620, 8) === 625, '1/8 档：620ms → 625ms');
+ok(Math.abs(SG.snapTimeMs(snapReds, 120, 100, 16) - 93.75) < 1e-6, '1/16 档：100ms → 93.75ms');
+ok(SG.snapTimeMs(snapReds, 120, 2100, 4) === 2125, '换红线(240BPM)后按新拍长：2100ms → 2125ms');
+ok(SG.snapTimeMs(snapReds, 120, -50, 4) === 0, '负时间钳到 0');
+ok(SG.snapTimeMs([], 120, 137.4, 16) === 137.4, '无红线时原样返回');
+
 
 const summary = `${files.length - skipped} 张 mania 谱面` + (skipped ? ` / ${skipped} 张非 mania 已跳过` : '');
 console.log('\n==== ' + (failures === 0 ? `ALL PASSED (${summary})` : `${failures} FAILURES (${summary})`) + ' ====');

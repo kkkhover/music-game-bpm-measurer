@@ -33,6 +33,10 @@ export type HostToPreview =
 export type PreviewCommand =
   | { type: 'play' }
   | { type: 'pause' }
+  /** 独立窗口的空格：它看不到主窗口的 isPlaying，交给主窗口按当前状态翻转 */
+  | { type: 'togglePlay' }
+  /** 独立窗口的 ←/→：按当前播放头前后移动 delta 秒 */
+  | { type: 'nudge'; delta: number }
   | { type: 'seek'; t: number }
   /** 录制起点：把播放头摆到 t 并保证处于播放状态（**不能**用 seek+play 代替，
    *  那个组合在同一个批处理里会把播放循环的 effect 折叠掉，播放头会冻死） */

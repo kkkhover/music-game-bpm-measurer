@@ -86,6 +86,43 @@ const DetachedPreview: React.FC = () => {
     return () => { alive = false; window.clearTimeout(timer); ch.close(); chRef.current = null; };
   }, []);
 
+  /**
+   * 独立窗口的全局快捷键。
+   * 这个 BrowserWindow 有**自己的 window 对象**，主窗口的 keydown 监听收不到这里的按键 ——
+   * 焦点停在预览窗口时空格/方向键就全失效了。这里把按键经通道转给主窗口执行
+   * （播放状态、播放头都在主窗口，独立窗口只负责转发）。
+   */
+  useEffect(() => {
+    const isTyping = (el: EventTarget | null): boolean => {
+      const n = el as HTMLElement | null;
+      if (!n || !n.tagName) return false;
+      const tag = n.tagName.toUpperCase();
+      if (tag === 'TEXTAREA' || tag === 'SELECT' || n.isContentEditable === true) return true;
+      if (tag === 'INPUT') {
+        const t = ((n as HTMLInputElement).type || 'text').toLowerCase();
+        return !['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file'].includes(t);
+      }
+      return false;
+    };
+    const send = (cmd: PreviewCommand) => chRef.current?.postMessage({ type: 'cmd', cmd });
+    const onKey = (e: KeyboardEvent) => {
+      if (isTyping(e.target)) return;
+      const ctrl = e.ctrlKey || e.metaKey;
+      if (e.code === 'Space' && !ctrl) {
+        e.preventDefault();
+        send({ type: 'togglePlay' });
+        return;
+      }
+      if ((e.code === 'ArrowLeft' || e.code === 'ArrowRight') && !e.altKey) {
+        const step = e.shiftKey ? 5 : 1;
+        e.preventDefault();
+        send({ type: 'nudge', delta: e.code === 'ArrowLeft' ? -step : step });
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, []);
+
   // ---- 窗口位置尺寸：打开时套用上次的，拖动/缩放结束后记住 ----
   useEffect(() => {
     const a = api();

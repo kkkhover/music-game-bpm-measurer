@@ -385,6 +385,17 @@ function App() {
       return null;
     }
   }, [audioContext]);
+  /**
+   * WebCodecs「音画完全同步」录制用的原始整曲 PCM。
+   * 变速播放时实际输出经 soundtouchjs time-stretch 处理、与原始 buffer 不同，
+   * 这时返回 null 让预览降级回 MediaRecorder（录实时总线），避免音画错开。
+   */
+  const getRecordAudio = useCallback((): AudioBuffer | null => {
+    if (Math.abs(playbackRateRef.current - 1) > 0.001) return null;
+    return audioData?.buffer ?? null;
+  }, [audioData]);
+  /** 打击音效共用主 AudioContext（避免多 context 争用音频设备造成爆音） */
+  const getPreviewAudioContext = useCallback((): AudioContext | null => audioContext, [audioContext]);
   // 挂载/音量变化时同步到实际设置值（平滑过渡防爆音）
   useEffect(() => {
     const g = masterGainRef.current;
@@ -1160,8 +1171,11 @@ function App() {
     osc.frequency.value = isDownbeat ? sound.freqMain : sound.freqAlt;
     const startTime = Math.max(audioContext.currentTime, time);
     const vol = (isDownbeat ? sound.vol : sound.vol * 0.55) * settings.metronomeVolume;
-    gain.gain.setValueAtTime(vol, startTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, startTime + sound.dur);
+    // ★ 1.5ms 淡入：振荡器从 0 硬跳到峰值会在每一拍「啪」一声，密集拍子叠起来就是爆音。
+    //   两端都包上包络（起始线性淡入 + 结尾指数衰减）即可消除，听感仍是清脆的咔哒。
+    gain.gain.setValueAtTime(0.0001, startTime);
+    gain.gain.linearRampToValueAtTime(Math.max(0.0002, vol), startTime + 0.0015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startTime + sound.dur);
     osc.start(startTime); osc.stop(startTime + sound.dur + 0.02);
     osc.onended = () => { osc.disconnect(); gain.disconnect(); };
   }, [audioContext, settings.metronomeSound, settings.metronomeVolume]);
@@ -1294,6 +1308,8 @@ function App() {
   const previewCommand = useCallback((cmd: PreviewCommand) => {
     if (cmd.type === 'play') void play();
     else if (cmd.type === 'pause') stop();
+    else if (cmd.type === 'togglePlay') { if (isPlayingRef.current) stop(); else void play(); }
+    else if (cmd.type === 'nudge') handleSeek(playheadRef.current + cmd.delta);
     else if (cmd.type === 'seek') handleSeek(cmd.t);
     else if (cmd.type === 'recordFrom') {
       /* ★ 录制起点：改位置 + 保证在播，一步到位。
@@ -1513,12 +1529,24 @@ function App() {
   }, [timingPoints, handleSeek, audioData, containerWidth, handleSectionClick]);
 
   useEffect(() => {
-      /** 焦点在输入类元素里时不拦截（保留浏览器/输入框自身的快捷键行为） */
+      /**
+       * 焦点在「真正在打字」的元素里时不拦截。
+       * ★ 旧判定把**所有** INPUT 都算成 typing，于是用户点过工具条/设置里的
+       *   复选框、数值框、按钮后，焦点一直留在那个元素上，空格等快捷键全部失效 ——
+       *   表现就是「不先点一下频谱或钢琴窗，快捷键没反应」。
+       *   这里只把文本类输入当打字；checkbox / radio / button / range 上照常响应全局快捷键
+       *   （空格的原生 click 会被下面的 preventDefault 挡掉，不会误触发开关）。
+       */
       const isTyping = (el: EventTarget | null): boolean => {
           const n = el as HTMLElement | null;
           if (!n || !n.tagName) return false;
           const tag = n.tagName.toUpperCase();
-          return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || n.isContentEditable === true;
+          if (tag === 'TEXTAREA' || tag === 'SELECT' || n.isContentEditable === true) return true;
+          if (tag === 'INPUT') {
+              const t = ((n as HTMLInputElement).type || 'text').toLowerCase();
+              return !['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file'].includes(t);
+          }
+          return false;
       };
       const handleKeyDown = (e: KeyboardEvent) => {
           const ctrl = e.ctrlKey || e.metaKey;
@@ -1555,8 +1583,9 @@ function App() {
           if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomBy(1.2); return; }
           if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomBy(1 / 1.2); return; }
       };
-      window.addEventListener('keydown', handleKeyDown);
-      return () => window.removeEventListener('keydown', handleKeyDown);
+      // capture 阶段：即使某个组件在 document/容器上 stopPropagation，快捷键也收得到
+      window.addEventListener('keydown', handleKeyDown, true);
+      return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, [togglePlay, undo, redo, handleFileUpload, handleExportJson, handleSeek, zoomBy, stepSection]);
 
   /**
@@ -2164,6 +2193,8 @@ function App() {
           recFps={settings.recFps}
           recKbps={settings.recKbps}
           getAudioStream={getRecordAudioStream}
+          getRecordAudio={getRecordAudio}
+          getAudioContext={getPreviewAudioContext}
           playing={isPlaying}
           audioMs={audioData ? Math.round(audioData.duration * 1000) : undefined}
           recordMetronome={settings.recordMetronome}
