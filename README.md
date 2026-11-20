@@ -29,7 +29,7 @@
 
 - 两个版本都在 [**Releases**](https://github.com/kkkhover/music-game-bpm-measurer/releases) 里，预览版带 `Pre-release` 标记。
 - 预览版逐条说明见 [v0.9.0 Release Notes](https://github.com/kkkhover/music-game-bpm-measurer/releases/tag/v0.9.0)。
-- 仓库默认分支是**最新开发版源码**（已包含 0.9.x 预览代码）；要 0.8.18 的源码请切到 [tag `v0.8.18`](https://github.com/kkkhover/music-game-bpm-measurer/tree/v0.8.18)。
+- **仓库默认分支 `main` 就是 v0.8.18 稳定版源码**；0.9.x 预览代码放在 [`dev-0.9x`](https://github.com/kkkhover/music-game-bpm-measurer/tree/dev-0.9x) 分支和 [tag `v0.9.0`](https://github.com/kkkhover/music-game-bpm-measurer/tree/v0.9.0) 里。
 
 > 🤖 **Vibecoding 项目**：代码大部分由 AI 辅助编写，人工负责需求、审核与验证。
 > 使用与二次开发前请知悉：AI 生成的内容可能有疏漏或未覆盖的边界情况；
@@ -70,10 +70,10 @@
 ### v0.8.18 这一版改了什么
 
 - **拖动时间轴不再卡成幻灯片**：总览条拆成「静态波形层 + 动态高亮层」并按列聚合，
-  拖动从 **1~2 fps → 110~120 fps**（GPU 光栅化 5961 ms → 12.7 ms）。
+  拖动从 **1–2 fps → 110–120 fps**（GPU 光栅化 5961 ms → 12.7 ms）。
 - **导入 timing 后也能正常播放**：播放头改成独立合成层、覆盖层参数全等短路、段落卡片 `React.memo`，
   播放 **19.7 fps → 55~61 fps**（120 Hz 前台 115 fps），p99 18.2 ms，零帧超过 20 ms。
-- **长曲翻页不再一顿**：频谱兜底路径的 `log10` 改位模式查表，翻页长帧 **126~155 ms → 59~67 ms**。
+- **长曲翻页不再一顿**：频谱兜底路径的 `log10` 改位模式查表，翻页长帧 **126–155 ms → 59–67 ms**。
 - **播放中点一下就停在那**：点击频谱/白条直接定位并保持（修掉旧版「点了之后 UI 冻死」）。
 - **播放头自动跟随**：白条滑出视口自动跳到下一屏（瞬跳、无动画）；手动滚动会临时关闭。
 - 导入音频只需点一次；缩放倍率（`px/s`）支持键盘直接输入数值。
