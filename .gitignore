@@ -82,3 +82,6 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+
+# 工作区临时目录（离屏截图/探针）
+.tmp*/
