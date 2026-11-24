@@ -15,22 +15,11 @@ app.commandLine.appendSwitch('ignore-gpu-blocklist');
 // 优先使用独立显卡（Optimus 笔记本上尽量选 NVIDIA）
 app.commandLine.appendSwitch('prefer-integrated-gpu', 'false');
 // 2D canvas 硬件加速：频谱/波形是「整幅重绘 + 大块 putImageData」型负载。
-// 实测（本机 Radeon 780M 核显 + 6.8GB 内存、可用 ~1GB）打开它反而更慢：
-// 每次缩放要重传 1920×1153 的纹理，核显显存和主存是同一块 → 直接触发换页，
-// 单帧被拖到 800~3700ms（CPU 侧却是 98% 空闲）。关闭后走 CPU 光栅，反而稳。
-// 由环境变量 BPM_CANVAS_GPU=1 可强制打开，方便在别的机器上对比。
 if (process.env.BPM_CANVAS_GPU === '1') {
   app.commandLine.appendSwitch('enable-accelerated-2d-canvas');
 }
 
-// ============================================================================
 // 本机性能档案（低配自适应）
-// ============================================================================
-// 为什么要探测：频谱/波形是「整曲 × 缩放 × 渲染倍率」叠出来的多层 canvas。
-// 在 8GB 内存且已被占满的笔记本上（本机就是：总量 6.8GB、可用常年 < 1GB），
-// 这些 canvas 会把主存和核显共享显存一起挤爆 → 系统开始用页面文件 →
-// 拖频谱/滚轮缩放时整机发粘，看起来像"软件卡"，其实是内存被打穿。
-// 判决只看内存，因为这是低配机上最先崩的一环；GPU 弱一点还能靠降分辨率顶住。
 function detectPerfProfile() {
   let totalKB = 0;
   let freeKB = 0;
@@ -63,14 +52,17 @@ if (PERF_PROFILE.lowEnd) {
 
 let mainWindow: BrowserWindow | null = null;
 
-// 解析启动参数里的音频文件：支持 `--open-audio=<路径>`，也支持把音频直接拖到 exe 图标上（裸路径参数）
-const AUDIO_EXT_RE = /\.(wav|mp3|flac|aac|ogg|wma)$/i;
+// 解析启动参数：`--open-audio=<路径>`，或把音频 / .osu / .osz / 谱面文件夹直接拖到 exe 图标上
+const OPEN_EXT_RE = /\.(wav|mp3|flac|aac|ogg|wma|osu|osz)$/i;
 function getAutoOpenPath(): string | null {
   const args = process.argv.slice(app.isPackaged ? 1 : 2);
   for (const raw of args) {
     const val = raw.startsWith('--open-audio=') ? raw.slice('--open-audio='.length) : raw;
-    if (!val || val.startsWith('-') || !AUDIO_EXT_RE.test(val)) continue;
-    try { if (fs.existsSync(val)) return path.resolve(val); } catch { /* 路径异常就当没有 */ }
+    if (!val || val.startsWith('-')) continue;
+    try {
+      if (!fs.existsSync(val)) continue;
+      if (fs.statSync(val).isDirectory() || OPEN_EXT_RE.test(val)) return path.resolve(val);
+    } catch { /* 路径异常就当没有 */ }
   }
   return null;
 }
@@ -178,20 +170,224 @@ ipcMain.handle('read-audio-file', async (_event, filePath: string) => {
   }
 });
 
-// ============================================================================
+// 谱面导入通道：.osz（zip 谱面包）/ .osu / 谱面文件夹
+
+interface ZipEntry { name: string; method: number; compSize: number; size: number; localOffset: number }
+
+/** 读 ZIP 中央目录（从尾部 EOCD 反查，注释区最长 65535 字节） */
+function readZipEntries(buf: Buffer): ZipEntry[] {
+  const minPos = Math.max(0, buf.length - 0x10000 - 22);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= minPos; i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) return [];
+  const count = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  const out: ZipEntry[] = [];
+  for (let i = 0; i < count; i++) {
+    if (p + 46 > buf.length || buf.readUInt32LE(p) !== 0x02014b50) break;
+    const method = buf.readUInt16LE(p + 10);
+    const compSize = buf.readUInt32LE(p + 20);
+    const size = buf.readUInt32LE(p + 24);
+    const nameLen = buf.readUInt16LE(p + 28);
+    const extraLen = buf.readUInt16LE(p + 30);
+    const commentLen = buf.readUInt16LE(p + 32);
+    const localOffset = buf.readUInt32LE(p + 42);
+    const name = buf.toString('utf8', p + 46, p + 46 + nameLen);
+    out.push({ name, method, compSize, size, localOffset });
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return out;
+}
+
+/** 解出单个 ZIP 条目 */
+function readZipEntry(buf: Buffer, e: ZipEntry): Buffer | null {
+  const p = e.localOffset;
+  if (p + 30 > buf.length || buf.readUInt32LE(p) !== 0x04034b50) return null;
+  const nameLen = buf.readUInt16LE(p + 26);
+  const extraLen = buf.readUInt16LE(p + 28);
+  const start = p + 30 + nameLen + extraLen;
+  const raw = buf.subarray(start, start + e.compSize);
+  if (e.method === 0) return Buffer.from(raw);
+  if (e.method === 8) { try { return zlib.inflateRawSync(raw); } catch { return null; } }
+  return null;
+}
+
+/** 音频扩展名（与渲染进程支持的解码格式一致） */
+const AUDIO_EXTS = new Set(['.mp3', '.ogg', '.wav', '.m4a', '.flac', '.aac', '.wma']);
+
+/** 从 .osu 文本里取 AudioFilename（相对谱面所在目录） */
+function audioFilenameOf(osuText: string): string {
+  const m = osuText.match(/^\s*AudioFilename\s*:\s*(.+?)\s*$/im);
+  return m ? m[1].trim() : '';
+}
+
+/** 目录里找音频（优先 .osu 引用的名字，找不到就取体积最大的音频） */
+function pickAudioInDir(dir: string, preferred: string): { path: string; name: string } | null {
+  let entries: string[] = [];
+  try { entries = fs.readdirSync(dir); } catch { return null; }
+  if (preferred) {
+    const hit = entries.find((n) => n.toLowerCase() === preferred.toLowerCase());
+    if (hit) return { path: path.join(dir, hit), name: hit };
+  }
+  const cands = entries.filter((n) => AUDIO_EXTS.has(path.extname(n).toLowerCase()));
+  if (!cands.length) return null;
+  cands.sort((a, b) => {
+    try { return fs.statSync(path.join(dir, b)).size - fs.statSync(path.join(dir, a)).size; } catch { return 0; }
+  });
+  return { path: path.join(dir, cands[0]), name: cands[0] };
+}
+
+/** 收集目录里的 .osu（谱面文件夹里一般就在根目录，向下多看两层） */
+function collectOsuFiles(dir: string, depth = 0): string[] {
+  let out: string[] = [];
+  let entries: fs.Dirent[] = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const e of entries) {
+    if (e.name.startsWith('.')) continue;
+    const p = path.join(dir, e.name);
+    if (e.isFile() && /\.osu$/i.test(e.name)) out.push(p);
+    else if (e.isDirectory() && depth < 1) out = out.concat(collectOsuFiles(p, depth + 1));
+  }
+  return out;
+}
+
+/** 组装一份「导入结果」：音频路径 + 候选 .osu 列表 */
+function buildImportPayload(dir: string, osuPaths: string[], audio?: { path: string; name: string } | null) {
+  const osuFiles = osuPaths
+    .map((p) => { try { return { name: path.basename(p), path: p, text: fs.readFileSync(p, 'utf8') }; } catch { return null; } })
+    .filter(Boolean) as { name: string; path: string; text: string }[];
+  if (!osuFiles.length) return { ok: false as const, error: '没有找到 .osu 谱面文件' };
+  const audioInfo = audio ?? pickAudioInDir(dir, audioFilenameOf(osuFiles[0].text));
+  if (!audioInfo) return { ok: false as const, error: '没有找到谱面对应的音频文件' };
+  return {
+    ok: true as const,
+    dir,
+    audioPath: audioInfo.path,
+    audioName: audioInfo.name,
+    osuFiles,
+  };
+}
+
+/** 导入按钮的对话框：音频 / .osu / .osz 一起选 */
+ipcMain.handle('open-import-file', async () => {
+  if (!mainWindow) return null;
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile'],
+    filters: [
+      { name: '音频 / 谱面 / 谱面包', extensions: ['mp3', 'ogg', 'wav', 'm4a', 'flac', 'aac', 'wma', 'osu', 'osz'] },
+      { name: 'osu! 谱面包 (.osz)', extensions: ['osz'] },
+      { name: 'osu! 谱面 (.osu)', extensions: ['osu'] },
+      { name: 'All Files', extensions: ['*'] }
+    ]
+  });
+  return !result.canceled && result.filePaths.length > 0 ? result.filePaths[0] : null;
+});
+
+/** 选择谱面文件夹（里面放 .osu + 音频） */
+ipcMain.handle('open-map-folder', async () => {
+  if (!mainWindow) return null;
+  const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
+  return !result.canceled && result.filePaths.length > 0 ? result.filePaths[0] : null;
+});
+
+/** 读文本文件（.osu / timing txt） */
+ipcMain.handle('read-text-file', async (_event, filePath: string) => {
+  try { return fs.readFileSync(filePath, 'utf8'); } catch { return null; }
+});
+
+/** 在谱面目录里找某个 AudioFilename（切换难度时用；找不到就返回 null，不动当前音频） */
+ipcMain.handle('find-map-audio', async (_event, dir: string, preferred: string) => {
+  try {
+    if (!dir || !fs.existsSync(dir)) return null;
+    const want = String(preferred || '').trim();
+    if (!want) return pickAudioInDir(dir, '');
+    const exact = path.join(dir, want);
+    if (fs.existsSync(exact)) return { path: exact, name: path.basename(exact) };
+    // Windows 大小写不敏感兜底（谱面里常写成 Audio.mp3，实际文件是 audio.mp3）
+    const hit = fs.readdirSync(dir).find((n) => n.toLowerCase() === want.toLowerCase());
+    return hit ? { path: path.join(dir, hit), name: hit } : null;
+  } catch { return null; }
+});
+
+/** 读单个 .osu：返回文本 + 它所在目录的音频 */
+ipcMain.handle('read-osu-file', async (_event, filePath: string) => {
+  try {
+    const text = fs.readFileSync(filePath, 'utf8');
+    const payload = buildImportPayload(path.dirname(filePath), [filePath], null);
+    if (!payload.ok) return payload;
+    return { ...payload, text, sourceName: path.basename(filePath) };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+/** 解 .osz：全部 .osu 解到临时目录（保留谱面名），音频取 AudioFilename 指向的那个 */
+ipcMain.handle('read-map-package', async (_event, filePath: string) => {
+  try {
+    const buf = fs.readFileSync(filePath);
+    const entries = readZipEntries(buf);
+    const osuEntries = entries.filter((e) => /\.osu$/i.test(e.name));
+    if (!osuEntries.length) return { ok: false, error: '压缩包里没有 .osu 谱面文件' };
+
+    const base = path.basename(filePath, path.extname(filePath)).replace(/[\\/:*?"<>|]/g, '_');
+    const dir = path.join(app.getPath('temp'), 'bpm-measurer-osz', `${base}-${buf.length}`);
+    fs.mkdirSync(dir, { recursive: true });
+
+    const osuFiles: { name: string; path: string; text: string }[] = [];
+    for (const e of osuEntries) {
+      const data = readZipEntry(buf, e);
+      if (!data) continue;
+      const name = path.basename(e.name);
+      const out = path.join(dir, name);
+      fs.writeFileSync(out, data);
+      osuFiles.push({ name, path: out, text: data.toString('utf8') });
+    }
+    if (!osuFiles.length) return { ok: false, error: '谱面包里的 .osu 解压失败' };
+
+    // 音频：按第一条 .osu 的 AudioFilename 精确取；找不到就取最大的音频条目
+    const want = audioFilenameOf(osuFiles[0].text).toLowerCase();
+    const audioEntries = entries.filter((e) => AUDIO_EXTS.has(path.extname(e.name).toLowerCase()));
+    let picked = want ? audioEntries.find((e) => path.basename(e.name).toLowerCase() === want) : undefined;
+    if (!picked) picked = audioEntries.sort((a, b) => b.size - a.size)[0];
+    if (!picked) return { ok: false, error: '谱面包里没有音频文件' };
+    const audioData = readZipEntry(buf, picked);
+    if (!audioData) return { ok: false, error: '谱面包里的音频解压失败' };
+    const audioName = path.basename(picked.name);
+    const audioPath = path.join(dir, audioName);
+    fs.writeFileSync(audioPath, audioData);
+
+    // 其它难度可能引用别的音频（如 1.1x/1.2x 各有自己的 mp3）→ 一并解到同一目录，切换难度时直接读
+    const wanted = new Set(osuFiles.map((f) => audioFilenameOf(f.text).toLowerCase()).filter(Boolean));
+    for (const e of audioEntries) {
+      const name = path.basename(e.name);
+      if (!wanted.has(name.toLowerCase())) continue;
+      const out = path.join(dir, name);
+      if (fs.existsSync(out)) continue;
+      const data = readZipEntry(buf, e);
+      if (data) fs.writeFileSync(out, data);
+    }
+
+    return { ok: true, dir, audioPath, audioName, osuFiles, sourceName: path.basename(filePath) };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+/** 扫谱面文件夹：里面所有 .osu 都作为候选，音频按第一条 .osu 的 AudioFilename 找 */
+ipcMain.handle('scan-map-folder', async (_event, dir: string) => {
+  try {
+    const osuPaths = collectOsuFiles(dir);
+    if (!osuPaths.length) return { ok: false, error: '这个文件夹里没有 .osu 谱面（请选 osu! Songs 下的单曲文件夹）' };
+    const payload = buildImportPayload(dir, osuPaths, null);
+    return payload.ok ? { ...payload, sourceName: path.basename(dir) } : payload;
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
 // Malody 谱面包（.mcz）打包 —— 极简 ZIP 写入器
-// ============================================================================
-// 为什么需要它（v0.8.12 修「Malody 里音乐只有几秒钟」）：
-//   .mc 里指定音频靠的是「文件名」，Malody 只会去**谱面文件夹里**找同名文件。
-//   我们的导出原样带上"你在本软件里导入的那个音频文件名"（往往是 osu! 谱面里的
-//   audio.mp3），而目标 Malody 谱面文件夹里的音频叫别的名字 → 找不到 → Malody 退回
-//   一个约 1 秒的占位音源 → 编辑器里"音乐时长只有几秒钟"。
-//   （Malody 日志特征：[Audio] Forced reset ... raw audio time: 1002.667 —— 卡在约 1 秒）
-//   所以这里直接把音频**打进包里**，包里的音频名与 .mc 里写的一致，问题从根上消失。
-//
-// 为什么手写而不是引第三方库：只需要"把几个文件塞进一个 zip"，而 Node 自带的
-//   zlib.deflateRawSync 输出的正是 ZIP 的 deflate 流，拼上头即可。
-//   结构对齐真实 .mcz（Malody 官方谱面包）：DEFLATE + 文件名 UTF-8。
 
 /** CRC32 查表（ZIP 每个条目头里都要带） */
 const CRC_TABLE = (() => {
@@ -275,10 +471,6 @@ function buildZip(entries: { name: string; data: Buffer }[]): Buffer {
 }
 
 // ★ v0.8.15：此处原有「只导出 Malody 谱面文件（.mc，不含音频）」的整条通道
-// （扫目标文件夹音频、询问是否改名、以及对应的 IPC 处理器）。该导出选项已按需求删除 ——
-// 现在 Malody 只有「谱面包(.mcz，含音频)」一条出口，音频跟着一起打包，
-// 不存在"音频名与谱面文件夹里对不上"的可能，故整块移除。
-// 注：注释里刻意不再写出被删符号的名字，免得产物 dist-electron/main.js 里还搜得到。
 
 
 /**
@@ -320,18 +512,6 @@ ipcMain.handle('save-malody-package', async (_event, opts) => {
 });
 
 // ===== 制谱侧栏（osu-maphelper）启动入口 =====
-// 从设置面板点「制谱侧栏」→ 拉起独立的 Electron 侧栏（主窗口 + 各功能区块独立窗口）。
-// 两个程序完全独立进程，互不干扰；已开着就不再重复启动。
-//
-// 取侧栏代码有两条路，优先走 ①：
-//   ① 【打包进软件的内置侧栏】v0.8.5 起：侧栏整棵树随包进了
-//      <安装目录>\resources\app\maphelper\（见 scripts/sync-maphelper.mjs）。
-//      直接拿**本软件自己的 exe** 加 --maphelper 参数启动即可 ——
-//      Electron 打包后入口固定是 resources/app，同一个入口按参数分流
-//      （带 --maphelper 走内置侧栏，不带就是本软件，见项目根 boot.cjs）。
-//      好处：交付包只有一个 exe，目标机器上既不需要 node，也不用另放侧栏文件夹。
-//   ② 【兜底】按版本号扫兄弟目录里的 osu-maphelper*，在 Node 模式下跑它的
-//      scripts/launch.mjs。开发环境走这条，改侧栏源码能立刻生效，不必重新同步。
 import { spawn } from 'child_process';
 
 let mapHelperProc: ReturnType<typeof spawn> | null = null;
@@ -384,16 +564,7 @@ function launchBundledMapHelper(): { pid?: number; dir: string; log: string } | 
     // 打包后是 windowsHide 启动、没有控制台，日志落文件是唯一的排查入口
     const logFd = fs.openSync(logPath, 'w');
 
-    // 参数：
-    //   · 打包后入口已被 Electron 写死为 resources/app，多传路径没有意义；
-    //     只有开发态的 electron.exe 需要显式给一个 app 目录，否则报
-    //     "Unable to find Electron app"（找不到 app 路径）。
-    //   · --user-data-dir：给侧栏进程一个**独立**的 Chromium 配置目录。
-    //     侧栏和软件是同一个 exe，默认会共用 %APPDATA%\bpm-measurer-util，
-    //     两个进程抢同一份 Chromium 缓存 → 日志刷 "Unable to move the cache:
-    //     拒绝访问 (0x5)"（缓存锁竞争）。隔开之后互不干扰，软件自己的设置
-    //     也不会被侧栏进程的窗口状态污染。（侧栏读软件设置是直接读文件的，
-    //     见 maphelper/src/bpmSettings.mjs，不依赖 Chromium 的 userData。）
+    // 启动参数
     const commonArgs = ['--maphelper', `--user-data-dir=${path.join(dataDir, 'chromium')}`];
     const args = app.isPackaged ? commonArgs : [path.join(__dirname, '..'), ...commonArgs];
 
@@ -410,10 +581,6 @@ function launchBundledMapHelper(): { pid?: number; dir: string; log: string } | 
       cwd: BUNDLED_MAPHELPER_DIR,
       stdio: ['ignore', logFd, logFd],
       // 【必须 false】这次是"正常模式"起 GUI 程序：windowsHide 会在 STARTUPINFO 里
-      //   带上 wShowWindow=SW_HIDE，Windows 会把该进程的**首个顶层窗口直接隐藏** ——
-      //   表现为侧栏进程活着、日志也正常，但窗口一个都看不见（hwnd 恒为 0）。
-      //   上一行注释里的"黑框"问题只在以 ELECTRON_RUN_AS_NODE 跑（控制台子系统）时才有，
-      //   GUI 模式的 Electron 根本不带控制台，所以这里不需要 windowsHide。
       windowsHide: false,
       env
     });
@@ -451,10 +618,6 @@ ipcMain.handle('launch-maphelper', async () => {
   }
 
   // ---------------- ② 兜底：扫描外部的 osu-maphelper* 项目目录（开发环境用） ----------------
-  // 定位 osu-maphelper 项目：
-  //   ① 先在固定目录里按名字扫（osu-maphelper_v0.8.3 / _v0.8.1 / 无版本号）——
-  //      用目录扫描而不是写死路径，以后换版本号目录不用改代码；
-  //   ② 再试相对本程序的位置（开发环境 __dirname 在 dist-electron 里）。
   const searchRoots = [
     'D:\\tmp\\新建文件夹\\bpm app',
     path.join(__dirname, '..')
@@ -488,19 +651,13 @@ ipcMain.handle('launch-maphelper', async () => {
   if (!projectDir) {
     return { ok: false, error: '未找到 osu-maphelper 项目（scripts/launch.mjs）' };
   }
-  // 用本软件自己的 Electron 内核（process.execPath）以 Node 模式去跑 launch.mjs：
+  // 用本软件自己的 Electron 内核以 Node 模式跑 launch.mjs
   // 打包成 exe 后机器上可能没有 node 命令，用 execPath 则开发/打包两种环境都有现成运行时。
   try {
     mapHelperProc = spawn(process.execPath, ['scripts/launch.mjs'], {
       cwd: projectDir,
       stdio: 'ignore',
-      // 【关键】windowsHide 必须为 true，而且**不能同时开 detached**：
-      //   以 ELECTRON_RUN_AS_NODE 运行时 execPath 变成了「控制台子系统」程序，
-      //   会弹出一个 cmd 黑框（用户看到的"指令窗口"）。
-      //   Windows 上 windowsHide 对应 CREATE_NO_WINDOW，而该标志在同时指定
-      //   DETACHED_PROCESS 时会被系统忽略 —— 之前正是 detached:true 让黑框一直挂着。
-      //   去掉 detached 后 CREATE_NO_WINDOW 生效，全程无窗口；Node 的子进程本来
-      //   就不会随父进程退出而被杀，所以侧栏照样独立存活。
+      // 必须 windowsHide，不能同时开 detached
       windowsHide: true,
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } // 让 Electron 以纯 Node 模式执行 .mjs
     });

@@ -1,8 +1,4 @@
 // 音游 Timing 转换模块
-// 将软件 timing（offset + points[beatIndex/bpm/timeSec]）转换为多种音游的 BPM 时间轴：
-//   ADOFAI / Malody / Phigros(RPE) / Arcaea / vivid/stasis
-// 时间逻辑与 utils/osuExport.ts 完全一致（v0.7.18 起：红线绝对时间 timeSec 优先，其次按拍号累加）
-// osu! 导出仍走 utils/osuExport.ts。
 
 import { roundHalfUp } from './osuExport';
 
@@ -174,20 +170,12 @@ export function generateMalodyChart(
   const filtered = bpmChangePoints(points);
   const baseBpm = filtered[0]?.bpm ?? 120;
   // ★ v0.8.11 修正：beat 用「真实时间反算出来的累计拍位置」写成 a + b/1440，
-  //   不再直接把取整后的 beatIndex 写进去 —— 详见 beatToRational 的注释。
-  //   time / effect 必须**用同一个 beat**，这样 mcz转osz 算出来的绿线时间
-  //   正好落在对应红线上（它按"最后一条 beat 不大于它的红线"定位基点）。
   const beats = beatsFromTimes(offsetSec, points);
   const timeList = filtered.map((p, i) => ({ beat: beatToRational(beats[i]), bpm: p.bpm, delay: 0.0 }));
   // effect.scroll = 绿线倍速（svRate 优先）或 基准BPM/当前BPM：BPM 变化时反向补偿，保持下落视觉原速（与 osu 绿线 SV 同公式）
   const effectList = filtered.map((p, i) => ({ beat: beatToRational(beats[i]), scroll: svFor(p, baseBpm) }));
 
   // ★ v0.8.12：占位音符放到**音频末尾**，而不是第 4 拍。
-  //   原因：Malody 的谱面长度以"最后一个音符"为准（真实谱面里音符一直排到曲子结束），
-  //   而原来只放一条第 4 拍的占位音符 → 谱面长度 ≈ 4 拍 ≈ 1.3 秒，
-  //   编辑器里就表现为"音乐只有几秒钟"。
-  //   这里按音频时长（调用方从已解码的音频拿到）反算出末尾那一拍的位置；
-  //   拿不到时长时退回"最后一条红线的位置"，至少不会比 timing 短。
   const tailBeat = (() => {
     const lastBeat = beats.length ? beats[beats.length - 1] : 0;
     const lastPoint = points[points.length - 1];
@@ -205,17 +193,9 @@ export function generateMalodyChart(
   })();
 
   // ★ 音频文件名：必须与该谱面文件夹里的音频**同名**（Malody 靠它载入歌曲，找不到就会在打开编辑器时崩溃）。
-  //   旧实现写死 'song.ogg' —— 谱面目录里根本没有这个文件，这正是「替换后打开谱面编辑就崩溃」的根因。
-  //   这里改用软件「导入音频」时的真实文件名（App.tsx 的 fileName）。
   const audio = audioFile.trim() || 'audio.ogg';
 
-  // 与真实 .mc 逐字段对齐（普查本机 23 个真实 Malody 谱面得出）：
-  //  · meta.$ver:0 —— 真实谱面 meta 的第一个字段
-  //  · ★ background / cover 必须**保留该键**（值为空串表示无图）。
-  //    实测把这两个键整个省掉后，mcz转osz.exe/malody2osu 会直接报错、不产出 .osu
-  //    （它无条件读取 meta["background"]）；所以这里写空串，不能删。
-  //  · 末尾特殊音符 —— sound 指向音频文件名、vol 音量、type:1，且必须是 note 数组的最后一条
-  //  · extra.test.divide —— 编辑器节拍细分（8 = 1/8 拍），与真实谱面一致
+  // 与真实 .mc 字段对齐
   const chart = {
     meta: {
       $ver: 0,
@@ -242,8 +222,6 @@ export function generateMalodyChart(
     effect: effectList,
     note: [
       // 占位音符：真实 Malody 谱面第 0 拍只放「音频特殊音符」，游戏音符从第 4 拍起。
-      // ★ v0.8.12：这条同时用来"撑起谱面长度"——必须排在**音频末尾**，
-      //   否则 Malody 编辑器里谱面只有几拍长（表现为"音乐只有几秒钟"）。
       { beat: beatToRational(tailBeat), column: 0 },
       // 末尾特殊音符（必须，且必须是 note 的最后一条）：携带音频文件名与偏移；
       // Malody offset 与 osu 反号（负值毫秒）
@@ -252,8 +230,6 @@ export function generateMalodyChart(
     extra: { test: { divide: 8, speed: 100, save: 0, lock: 0, edit_mode: 0 } },
   };
   // Malody 的 .mc 原文件是「全部内容压成一行」的紧凑 JSON（无缩进/无空格）。
-  // 旧实现输出 indent=2 的美化 JSON（几千个空格 + 上千行），用户反映「有空格不能直接当 .mc 用」，
-  // 故这里改成紧凑序列化，与真实谱面字节风格一致，可存为 xxx.mc 直接放进谱面文件夹。
   return JSON.stringify(chart);
 }
 

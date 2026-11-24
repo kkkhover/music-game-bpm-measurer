@@ -1,10 +1,4 @@
 // osu! TimingPoints 导出模块
-//   - 红线：定义 BPM（beatLength = 60000 / bpm）
-//   - 绿线：流速 SV = 基准BPM / 当前BPM（四舍五入两位），green = -100 / SV
-//   - v0.7.20：**完整导出**——每一条红线都输出（不做合并 / 冗余剔除），与软件内红线一一对应
-//
-// 时间计算：红线位置以「绝对时间 timeSec」为权威值 —— 有 timeSec 就用它（红线位置独立于 BPM，
-// 与界面显示完全一致）；没有 timeSec 才退回按拍号差值累加（time[i] = time[i-1] + 拍数差 × 60000/bpm）。
 
 /** 四舍五入保留指定小数位（处理浮点误差，与 Python round_half_up 一致） */
 export function roundHalfUp(x: number, digits: number = 2): number {
@@ -42,7 +36,7 @@ export function generateOsuTimingPoints(
     if (typeof a.timeSec === 'number' && typeof b.timeSec === 'number') return a.timeSec - b.timeSec;
     return a.beatIndex - b.beatIndex;
   });
-  if (sorted.length === 0) return '[TimingPoints]';
+  if (sorted.length === 0) return '';
 
   const offsetMs = offsetSec * 1000.0;
 
@@ -60,7 +54,9 @@ export function generateOsuTimingPoints(
     );
   }
 
-  const out: string[] = ['[TimingPoints]'];
+  const out: string[] = [];
+  // 数值最多保留 6 位小数并去掉尾随 0（osu! 直接可读，避免 500.000000000000 这类输出）
+  const fmt = (n: number) => String(Math.round(n * 1e6) / 1e6);
 
   for (let i = 0; i < sorted.length; i++) {
     const bpm = sorted[i].bpm;
@@ -71,13 +67,13 @@ export function generateOsuTimingPoints(
 
     // 完整输出（v0.7.20）：每一条红线都写一条 timing point，**不做任何合并 / 冗余剔除**
     // —— 导出后的红线数量与软件里完全一致，位置一一对应
-    out.push(`${t},${beatLen.toFixed(12)},${meter},1,0,72,1,0`);
+    out.push(`${t},${fmt(beatLen)},${meter},1,0,72,1,0`);
 
     // 绿线：流速 SV = 自定义倍速（svRate>0）或 基准bpm/当前bpm（四舍五入两位）
     // 默认每条红线后都跟一条绿线；该段关闭绿线（sv === false）时不输出
     if (sorted[i].sv !== false) {
       const green = -100.0 / svValueOf(sorted[i], baseBpm);
-      out.push(`${t},${green.toFixed(12)},${meter},1,0,72,0,0`);
+      out.push(`${t},${fmt(green)},${meter},1,0,72,0,0`);
     }
   }
 

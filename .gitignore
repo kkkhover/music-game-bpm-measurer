@@ -1,14 +1,12 @@
-# 依赖
+# ===== 依赖 =====
 node_modules/
 
-# 构建产物
+# ===== 构建 / 打包产物 =====
 dist/
 dist-electron/
 dist-ssr/
 release/
 *.tsbuildinfo
-
-# 打包产物
 BPM测速助手_v*/
 win-unpacked/
 *.exe
@@ -17,61 +15,36 @@ win-unpacked/
 *.AppImage
 builder-debug.yml
 
-# 运行期数据 / 日志 / 缓存
+# 侧栏集成副本（由 scripts/sync-maphelper.mjs 生成，源码在 osu-maphelper_v*/）
+maphelper/
+
+# ===== 运行期数据 / 日志 / 缓存 =====
 logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-pnpm-debug.log*
+pnpm-error.log*
 .cache/
 backups/
-_smoke-data/
 
-# 侧栏集成副本（生成物）
-maphelper/
+# ===== 工作区临时文件（离屏截图 / 探测脚本 / 压缩包）=====
+.tmp*/
+*.zip
 
-# 不入库文档
+# ===== 不入库文档 =====
 更新日志.md
 v0.*-*.md
-docs/reports/
 
-# 工作区临时文件
-_*/
-.tmp/
-_*.mjs
-_*.js
-_*.txt
-_*.wav
-_*.png
-orig_src/
-*.zip
-verify_detune.mjs
-generate_timing.py
-样例-实机导出的malody谱面.mc
-
-# 测试产物 / Python 缓存
+# ===== 测试产物 / Python 缓存 =====
 **/tests/shots/
 __pycache__/
 *.pyc
 
-# 项目内部笔记
+# ===== 项目内部笔记 =====
 .workbuddy/
 
-# 侧栏历史版本
-osu-maphelper_v0.8.1/
-osu-maphelper_v0.8.3/
-osu-maphelper_v0.8.4/
-osu-maphelper_v0.8.5/
-osu-maphelper_v0.8.6/
-osu-maphelper_v0.8.7/
-osu-maphelper_v0.8.8/
-osu-maphelper_v0.8.9/
-osu-maphelper_v0.8.10/
-osu-maphelper_v0.8.12/
-osu-maphelper_v0.8.16/
-
-# 编辑器 / 系统
+# ===== 编辑器 / 系统 =====
 .vscode/*
 !.vscode/extensions.json
 .idea/

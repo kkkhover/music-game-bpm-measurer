@@ -1,13 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 // 统一暴露为 window.electronAPI（与 App.tsx 中的检查保持一致）
-//
-// 【关键】本文件必须以 CommonJS 形式加载。
-//   Electron 的 preload 脚本（默认沙箱模式）不支持 ESM：若产物里含 `import` 语法，
-//   会直接报 “Cannot use import statement outside a module”，preload 加载失败、
-//   window.electronAPI 整个未定义（实测踩过这个坑）。
-//   因此源码用 `.cts` 扩展名 —— TypeScript 会强制把它编译成 CommonJS 的 preload.cjs。
-//   对应的构建配置见 tsconfig.preload.json，主进程引用路径见 main.ts。
 contextBridge.exposeInMainWorld('electronAPI', {
   // 本机性能档案（低配自适应用）：{ totalGB, freeGB, lowEnd }
   // 用 sendSync 是因为渲染进程首帧就要按它决定渲染倍率，异步拿会让画面先按高分辨率建一次画布。
@@ -19,6 +12,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => { ipcRenderer.removeListener('auto-open-audio', listener); };
   },
   openAudioFile: () => ipcRenderer.invoke('open-audio-file'),
+  // 导入：音频 / .osu / .osz 同一个对话框；另可单独选谱面文件夹
+  openImportFile: () => ipcRenderer.invoke('open-import-file'),
+  openMapFolder: () => ipcRenderer.invoke('open-map-folder'),
+  // 读 .osu 文本 / 读 .osu + 同目录音频 / 解 .osz / 扫谱面文件夹
+  readTextFile: (filePath: string) => ipcRenderer.invoke('read-text-file', filePath),
+  readOsuFile: (filePath: string) => ipcRenderer.invoke('read-osu-file', filePath),
+  readMapPackage: (filePath: string) => ipcRenderer.invoke('read-map-package', filePath),
+  scanMapFolder: (dir: string) => ipcRenderer.invoke('scan-map-folder', dir),
+  findMapAudio: (dir: string, preferred: string) => ipcRenderer.invoke('find-map-audio', dir, preferred),
   // 读取音频文件内容（返回 Uint8Array，供渲染进程解码）
   readAudioFile: (filePath: string) => ipcRenderer.invoke('read-audio-file', filePath),
   saveFile: (options?: {

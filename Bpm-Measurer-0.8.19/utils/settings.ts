@@ -69,7 +69,13 @@ export interface AppSettings {
   metronomeVolume: number; // 节拍器音量 0-1
   musicVolume: number;   // 音乐音量 0-1
   renderScale: number; // 整体渲染分辨率（DPI 缩放倍率）：1=跟随屏幕缩放，<1 渲染像素减少（更流畅），>1 提高清晰度（更耗性能）
-  beatLineDelayMs: number; // 红线节拍线延迟手动微调（毫秒，滑条 ±100 / 输入框任意值）：仅偏移节拍线显示位置，不影响频谱/声谱时间轴
+  beatLineDelayMs: number; // 红线 / 节拍线的显示延迟（毫秒，正=刻度右移 = 拍子稍晚）：**只挪刻度**，频谱与波形按音乐真实时间渲染；节拍器跟随红线，播放头压线才响
+  /**
+   * 同步微调（毫秒）：在「自动实测的设备输出延迟」之上再加的偏移，正 = 画面整体更滞后
+   * （听起来节拍器相对播放头更早）。设备上报不准时（蓝牙 / 虚拟声卡）用它一次校准。
+   * 与 beatLineDelayMs 正交：这个只改「画面 vs 声音」，红线与频谱的相对位置不受影响。
+   */
+  syncAdjustMs: number;
   specFFTSize: number;  // 频谱 FFT 精度（采样点数，2 的幂）：越大频率分辨率越高（0.5K≈86Hz / 1K≈43Hz / 2K≈21Hz / 4K≈11Hz @44.1kHz）
   specSensitivity: number; // 频谱显示灵敏度（dB 阈值）：低于该 dB 显示为黑色，越小越敏感（60~120）
   // ---- 语言 ----
@@ -91,7 +97,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   metronomeVolume: 0.8,
   musicVolume: 1.0,
   renderScale: 1.0, // 默认跟随屏幕缩放（devicePixelRatio × 1.0）
-  beatLineDelayMs: 30, // 默认红线节拍线延迟 30ms（v0.7.22 起；用户仍可在设置里微调）
+  beatLineDelayMs: 20, // 默认 20ms：刻度略晚于真实拍点，听感与画面对得更齐；个别谱面整体偏时再手动挪
+  syncAdjustMs: 0, // 默认 0：设备延迟由 measureOutputLatency 自动补偿，只有上报不准时才手动加减
   specFFTSize: 1024, // 默认 1K 精度（频率分辨率 ~43Hz，兼顾清晰度与性能）
   specSensitivity: 75, // 默认灵敏度阈值 75dB（弱信号较明显，画面通透）
   lang: 'zh',
@@ -137,6 +144,19 @@ export function loadSettings(): AppSettings {
     if (!raw) return { ...DEFAULT_SETTINGS };
     const parsed = JSON.parse(raw);
     const merged: AppSettings = { ...DEFAULT_SETTINGS, ...parsed };
+    // ★ v0.8.19：延迟语义定为「只挪红线刻度」（频谱/波形/音频一律按真实时间）。
+    //   旧键 spectrumDelayMs 是「位移频谱 + 提前起播」，与新语义不是同一个量，直接丢弃。
+    delete (merged as any).spectrumDelayMs;
+    if (typeof merged.beatLineDelayMs !== 'number' || !Number.isFinite(merged.beatLineDelayMs)) {
+      merged.beatLineDelayMs = DEFAULT_SETTINGS.beatLineDelayMs; // 兜底：NaN / 缺字段
+    }
+    if (typeof merged.syncAdjustMs !== 'number' || !Number.isFinite(merged.syncAdjustMs)) {
+      merged.syncAdjustMs = DEFAULT_SETTINGS.syncAdjustMs; // 兜底：NaN / 缺字段
+    }
+    // ★ v0.8.19：默认偏移 0 → 20ms，升级后只覆盖一次，之后用户自己调的值照常保留
+    if ((parsed as any).__offsetReset2 !== 1) {
+      merged.beatLineDelayMs = DEFAULT_SETTINGS.beatLineDelayMs;
+    }
     // v0.7.13：旧键清理（renderQuality → renderScale、audioDelayMs → beatLineDelayMs）
     // v0.7.18：defaultMeasureLength 已废弃（红线位置改为各自的绝对时间戳）
     delete (merged as any).renderQuality;
@@ -145,18 +165,12 @@ export function loadSettings(): AppSettings {
     // v0.8.16 回退：删除自动跟随设置残留键（该功能有回归，已整体移除）
     delete (merged as any).followPlayhead;
     // 旧版本（无版本标记或版本过低）→ 强制套用新频谱默认（完整色阶 + 青绿波形），主题/语言保留
-    // v0.9.x：渲染分辨率锁定 1080p（位图宽恒 1920 设备像素）。
-    // 旧版本用户常为了对抗卡顿把 renderScale 调到 0.5（位图只有 ~960px 宽，糊得厉害），
-    // 渲染路径重写后不再需要这种妥协 → 一次性恢复到 1.0（正好 1080p）。
     if ((parsed as any).__renderLock !== 1) {
       merged.renderScale = DEFAULT_SETTINGS.renderScale;
     }
     if (parsed.__v !== STORAGE_VERSION) {
       merged.specPalette = DEFAULT_SETTINGS.specPalette;
       merged.waveColor = DEFAULT_SETTINGS.waveColor;
-      // v0.7.22：红线节拍线延迟新默认 30ms；旧默认值（0 = 从未校准过）自动升级为 30，
-      // 已手动调过的值保持不变
-      if (merged.beatLineDelayMs === 0) merged.beatLineDelayMs = DEFAULT_SETTINGS.beatLineDelayMs;
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...merged, __v: STORAGE_VERSION, __renderLock: 1 })); } catch { /* ignore */ }
     }
     return merged;
@@ -168,7 +182,7 @@ export function loadSettings(): AppSettings {
 /** 保存设置到 localStorage（附带版本标记，避免迁移逻辑反复触发） */
 export function saveSettings(s: AppSettings): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...s, __v: STORAGE_VERSION, __renderLock: 1 }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...s, __v: STORAGE_VERSION, __renderLock: 1, __offsetReset2: 1 }));
   } catch { /* 存储失败静默忽略 */ }
 }
 
@@ -472,6 +486,9 @@ export function spectrogramColor(
   const v = Math.max(0, Math.min(1, val));
   const f = Math.max(0, Math.min(1, freqNorm));
 
+  // 背景统一纯黑：极弱信号直接给黑色，不再按配色最低色渲染出暗紫/暗蓝底纹
+  if (v < 0.055) return [0, 0, 0];
+
   // 单色方案（只由 val 决定，保持原曲线；色阶方案为多级渐变）
   const single = SINGLE_PALETTES;
   if (palette in single) return single[palette](v);
@@ -528,15 +545,7 @@ export function spectrogramColor(
   ];
 }
 
-// ============================================================================
 // 频谱色表（LUT）—— 低配机适配的核心优化
-// ============================================================================
-// 频谱是「每像素一次着色」的：一屏全量重绘在 2880×1800 / 200% 缩放的机器上
-// ≈ 2800×800 = 224 万像素。原先每像素都要走一遍 spectrogramColor：
-//   建对象 → hexToRgbArr 解析字符串 → interpStops 分配数组 → 3 次 Math.pow
-// 实测这类「与像素位置无关」的开销会占到整帧的绝大部分，而且制造巨量短命对象
-// （GC 一触发就掉帧）。这里把「强度 × 频率」两个维度预先算成一张色表：
-// 绘制时每像素只剩「查一次表」。
 
 /** 色表的频率维度档数（强度维度固定 256 档 = 一个字节） */
 export const SPECTRO_LUT_FREQ = 512;

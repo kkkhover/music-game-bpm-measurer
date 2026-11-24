@@ -4,14 +4,10 @@ import { AudioData, ViewState, TimingPoint } from '../types';
 import { computeFFT, getHannWindow } from '../utils/audioUtils';
 import { precomputeSpectrogram, PrecomputedSpectrogram, u8ToVal } from '../utils/spectrogramPrecompute';
 import { buildSpectrogramLUT, SPECTRO_LUT_FREQ, SPECTRO_LUT_SHIFT } from '../utils/settings';
-import { getPointAtTime } from '../utils/timingUtils';
+import { getPointAtTime, getTimeAtBeatIndex } from '../utils/timingUtils';
 import { t } from '../utils/i18n';
 
 // ===== dB 量化表（频谱兜底路径用）=====
-// 没有整曲预计算数据时，每列每行都要算一次 20*Math.log10(mag)：一屏 2134 列 × 1282 行
-// = 2.7M 次 log10，实测光这一步就 60ms —— 瞬跳翻页那个 80~130ms 长帧主要是它。
-// 而最终只取 256 档颜色强度，所以把「Float32 位模式的高 16 位」直接映射成强度档即可：
-// 每行只剩一次 float→bits 的位转换 + 一次 Uint8 查表（实测同等工作量 25ms → 6ms 级）。
 const BITS_BUF = new ArrayBuffer(4);
 const BITS_F32 = new Float32Array(BITS_BUF);
 const BITS_U32 = new Uint32Array(BITS_BUF);
@@ -51,7 +47,7 @@ interface VisualizerProps {
   renderDpr: number;     // 渲染缩放比（性能优先时 ≤1，核显/独显笔记本减负）
   specFFTSize: number;   // 频谱 FFT 精度（采样点数，2 的幂：512/1024/2048/4096，越大频率分辨率越高）
   specSensitivity: number; // 频谱显示灵敏度（dB 阈值，60~120，越小越敏感）
-  beatLineDelaySec: number; // 红线节拍线延迟补偿（秒，±由用户微调）：仅偏移刻度显示位置，不影响频谱/声谱时间轴
+  beatLineDelaySec: number; // 红线 / 节拍线的显示延迟（秒，正=整体右移）：频谱与波形始终按音乐的**真实时间**渲染，只挪刻度
   onUpdateSectionTime?: (id: string, sec: number) => void; // 拖动红色段起点 → 直接改该红线的绝对时间戳（红线位置独立）
 }
 
@@ -88,11 +84,6 @@ const Visualizer: React.FC<VisualizerProps> = ({
   const spectrogramRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   // ★ v0.8.19：播放头不再是 canvas，而是一个 14px 宽的合成层 div。
-  //   原因：整窗尺寸的 canvas（2134×1282 ≈ 10.4MB）即便只改 13px 一列，Chromium 也要把
-  //   **整张位图**重新上传给合成器（软件光栅化 + 无部分上传）→ 每秒 60 次 × 10.4MB ≈ 600MB/s，
-  //   核显共享内存带宽直接被吃满，实测呈现帧率只有 ~25fps。
-  //   换成 DOM 元素后用 transform 定位：合成器只移动已有图层，不重光栅也不上传纹理，
-  //   可以稳定跑满屏幕刷新率（120Hz 也跟得上），并且把带宽让给频谱/波形。
   const playheadRef = useRef<HTMLDivElement>(null);
 
   const [dragging, setDragging] = useState<{ 
@@ -110,11 +101,6 @@ const Visualizer: React.FC<VisualizerProps> = ({
   const intHeight = Math.floor(height);
 
   // ===== 固定 1080p 渲染 =====
-  // 位图宽度恒为 1920 设备像素（本机 16:10 → 1920×1131），与窗口大小 / 屏幕缩放 / 显卡无关。
-  // 本机是 2880×1800 @200%：devicePixelRatio=2 时原版每层要建 2774×1634 ≈ 450 万像素的位图，
-  // 4 层叠加把主存和核显共享显存一起打穿（可用内存常年 <1GB）→ 拖拽就卡。
-  // 锁到 1920 宽后每层 217 万像素（−52%），且分辨率是「固定值」而非随屏幕浮动，
-  // 观感稳定、性能可预期。renderDpr 只是用户侧清晰度微调倍率（默认 1.0 = 正好 1080p）。
   const RENDER_LOCK_WIDTH = 1920;
   const dprEff = Math.max(0.5, Math.min(2, (RENDER_LOCK_WIDTH / Math.max(1, intWidth)) * (renderDpr || 1)));
   
@@ -129,8 +115,6 @@ const Visualizer: React.FC<VisualizerProps> = ({
   const hannWindow = useMemo(() => getHannWindow(specFFTSize), [specFFTSize]);
 
   // 频谱色表（LUT）：只在配色参数变化时重建一次。
-  // 绘制时每像素从「一次 spectrogramColor 调用（闭包/数组分配 + pow + hex 解析）」
-  // 降为「一次 Uint32 数组查表」——这是低配机上消除频谱拖拽卡顿的关键。
   const colorLut = useMemo(
     () => buildSpectrogramLUT(specPalette, specCustom, peakThreshold, peakColor),
     [specPalette, specCustom, peakThreshold, peakColor]
@@ -141,15 +125,9 @@ const Visualizer: React.FC<VisualizerProps> = ({
   // ===== 平移复用（快速滚动优化）：记录上次绘制参数，仅重绘露出边缘）=====
   const waveLastRef = useRef<{ zoom: number; scrollLeft: number; waveColor: string; w: number; h: number } | null>(null);
   const specLastRef = useRef<{ zoom: number; scrollLeft: number; specLogBase: number; specPalette: string; specCustom: string; peakThreshold: number; peakColor: string; specInvert: boolean; specSensitivity: number; w: number; h: number; pre: PrecomputedSpectrogram | null } | null>(null);
-  const overlayLastRef = useRef<{ zoom: number; scrollLeft: number; w: number; h: number; delay: number; points: TimingPoint[] } | null>(null);
+  const overlayLastRef = useRef<{ zoom: number; scrollLeft: number; w: number; h: number; points: TimingPoint[]; shift: number } | null>(null);
 
   // ===== 缩放预览：缩放期间不重绘，只做合成层变换 =====
-  // 实测（本机 2880×1800@200%、Radeon 780M 核显、物理内存仅 6.8GB）：
-  //   一次整幅重绘耗时 0.6~2.0 秒，其中 **JS 只占约 40ms**，
-  //   其余全在 GPU 进程——对这一叠 1920×1153 的 canvas 做光栅 + 纹理上传（GPU 进程吃满一核）。
-  // 这是核显共享系统内存 + 显存不足导致的「CPU/GPU 调度」瓶颈，靠优化脚本无解。
-  // 对策：缩放时先用旧位图做 CSS 变换预览（合成层 scaleX，不触发重新光栅，代价≈0），
-  //   等停止缩放 160ms 后再整幅重绘一次。交互路径上不再有秒级卡死。
   const [zoomSettling, setZoomSettling] = useState(false);
   const zoomSettleTimer = useRef<number | null>(null);
   const firstZoomEffect = useRef(true);
@@ -185,9 +163,6 @@ const Visualizer: React.FC<VisualizerProps> = ({
       return;
     }
     // ★ 关键：预览缩放必须限幅。合成器对「静态 transform 改变」会按新倍率重新光栅化整层，
-    //   scaleX(8.9) 等于要把 1920×1153 的层按 8.9 倍重新铺一遍 → 实测直接卡 3~4 秒。
-    //   限在 ±35% 以内时属于合成器免光栅化的安全范围，看起来仍是平滑缩放；
-    //   超出部分不跟手（画面停住），160ms 后整幅重绘自然追上。
     const rawScale = viewState.zoom / last.zoom;
     const scale = Math.max(0.74, Math.min(1.35, rawScale));
     const tx = last.scrollLeft * scale - viewState.scrollLeft;
@@ -214,7 +189,7 @@ const Visualizer: React.FC<VisualizerProps> = ({
   // 缩放时一秒能产生上百 MB 垃圾 → V8 大 GC + 内存吃紧的机器换页，实测出现 3~4 秒停顿。
   const specBufRef = useRef<Map<number, { h: number; idata: ImageData; u32: Uint32Array }>>(new Map());
   const colPoolRef = useRef<Uint32Array[]>([]);
-  // 缓存上限不再写死 3000 列，而是按字节预算动态算（见频谱 effect）：
+  // 缓存上限按字节预算动态算
   // 3000 列 × 每列 fullHeight×4B 在 200% 缩放下就是 ~10MB 常驻，内存紧张的机器会被这一步拖累。
   const specCacheLimitRef = useRef(1200);
   // 频谱分帧渲染调度（首次/跳转全量渲染分批完成，不卡主线程）
@@ -229,9 +204,6 @@ const Visualizer: React.FC<VisualizerProps> = ({
   const [specData, setSpecData] = useState<PrecomputedSpectrogram | null>(null);
   const specPreTokenRef = useRef(0);
   // ★ v0.8.14：预计算调度（串行 + 只保留最新）—— 与侧栏 renderer/viz.js 同一套逻辑。
-  //   一次预计算要建「整曲长度」的 OfflineAudioContext 并渲染到底（10 分钟谱 ≈ 300MB），
-  //   而离线渲染**无法取消**：旧写法只要 [audioData, specFFTSize] 变化就无条件再起一个，
-  //   连续换歌/连续改精度时多个整曲渲染会叠着跑（侧栏同类写法实测：10 次快速连切 = 并发 10、+1.6GB）。
   const specRunningRef = useRef(false);
   const specPendingRef = useRef<{ buffer: Parameters<typeof precomputeSpectrogram>[0]; fft: number; token: number } | null>(null);
   const specPumpRef = useRef<() => void>(() => { /* 初始化，下面立即赋值 */ });
@@ -260,9 +232,6 @@ const Visualizer: React.FC<VisualizerProps> = ({
     setSpecData(null); // 切换音频/精度先清空，绘制回退 JS FFT（避免旧数据错位）
     if (!audioData) { specPendingRef.current = null; return; }
     // ★ 长曲跳过整曲预计算：预计算要把整首歌塞进 OfflineAudioContext（7 分钟立体声 ≈ 150MB+，
-    //   渲染期间还要翻倍），本机物理内存只有 6.8GB、可用常年 1~2GB，实测会直接卡死在
-    //   GPU/内存换页上（一次 3~4 秒停顿）。而逐列 JS FFT 单列只要 ~24µs（1920 列 ≈ 46ms，
-    //   且列缓存命中后为 0），对 4 分钟以上的曲子完全够用，省下的是几百 MB 内存。
     if (audioData.duration > 240) { specPendingRef.current = null; return; }
     specPendingRef.current = { buffer: audioData.buffer, fft: specFFTSize, token };
     specPumpRef.current();
@@ -310,6 +279,7 @@ const Visualizer: React.FC<VisualizerProps> = ({
         ctx.strokeStyle = waveColor;
         ctx.lineWidth = 1;
         for (let x = s0; x < s1; x++) {
+            // ★ v0.8.19：波形严格按音乐真实时间渲染，不再做任何位移（延迟校准只作用于红线刻度）
             const t = xToTime(x);
             const sampleIdx = Math.floor(t * audioData.buffer.sampleRate);
             if (sampleIdx < 0 || sampleIdx >= rawData.length) continue;
@@ -384,9 +354,6 @@ const Visualizer: React.FC<VisualizerProps> = ({
     const base = specLogBase;
 
     // ===== 行映射预计算（性能核心）=====
-    // 频率→bin 的映射只与 y（行）有关，与 x（列）完全无关。原先每个像素都重算一次
-    // Math.pow + 除法，一屏 224 万像素就是 224 万次 pow。这里按行算一次，绘制时只查表。
-    // 列缓存按字节预算定上限（约 4MB）：缓存只为「跳转/缩放少算几列」服务，不值得吃满内存。
     const colBytes = Math.max(1, fullHeight * 4);
     specCacheLimitRef.current = Math.max(512, Math.min(3000, Math.floor((8 * 1024 * 1024) / colBytes)));
     const rowB0 = new Int32Array(fullHeight);
@@ -416,7 +383,7 @@ const Visualizer: React.FC<VisualizerProps> = ({
     const lut = colorLut;
 
     // ===== 单列构建（列缓存命中直接返回；否则算好并写入缓存）=====
-    // ★ v0.8.21：绘制与「下一页预取」共用这一份逻辑 —— 预取只算列、不碰 ImageData。
+    // ★ v0.8.19：绘制与「下一页预取」共用这一份逻辑 —— 预取只算列、不碰 ImageData。
     const buildColumn = (sampleIdx: number): Uint32Array => {
         const hit = specCacheRef.current.get(sampleIdx);
         if (hit) return hit;
@@ -428,7 +395,9 @@ const Visualizer: React.FC<VisualizerProps> = ({
         let preCol1: Uint8Array | null = null;
         let preFrac = 0;
         if (pre && pre.data.length > 0) {
-            const blockF = sampleIdx / pre.hop;
+            // ★ v0.8.19：列的时间基准是**窗心**不是窗头 —— 用 (sampleIdx - timeShift)/hop 取列，
+            //   否则整幅频谱右偏一个 hop（48k/2048 时 10.7ms），看起来就是「频谱比红线晚 10ms」。
+            const blockF = (sampleIdx - pre.timeShift) / pre.hop;
             const b0 = Math.floor(blockF);
             preCol0 = pre.data[b0] ?? null;
             preCol1 = pre.data[b0 + 1] ?? preCol0;
@@ -451,7 +420,9 @@ const Visualizer: React.FC<VisualizerProps> = ({
             }
         } else {
             // 兜底：JS FFT（预计算未完成 / 长曲跳过整曲预计算时）
-            for (let i = 0; i < specFFTSize; i++) input[i] = rawData[sampleIdx + i] * hannWindow[i];
+            // ★ v0.8.19：窗必须**居中**在 sampleIdx（与预计算列的时间基准一致），否则偏 fftSize/2
+            const winStart = sampleIdx - (specFFTSize >> 1);
+            for (let i = 0; i < specFFTSize; i++) input[i] = (rawData[winStart + i] ?? 0) * hannWindow[i];
             const magnitudes = computeFFT(input);
             for (let y = 0; y < fullHeight; y++) {
                 const b0 = rowB0[y];
@@ -495,10 +466,12 @@ const Visualizer: React.FC<VisualizerProps> = ({
         const idata = entry.idata;
         const buf = entry.u32;
         for (let px = 0; px < colW; px++) {
+            // ★ v0.8.19：频谱严格按音乐真实时间渲染（不做位移），延迟校准只作用于红线刻度
+            // ★ v0.8.19：列基准已按窗心修正（见 buildColumn），这里不再需要任何补偿量
             const t = xToTime((px0 + px) / dpr);
             if (t < 0 || t >= audioData.duration) continue;
             const sampleIdx = Math.floor(t * sampleRate);
-            if (sampleIdx < 0 || sampleIdx + specFFTSize >= rawData.length) continue;
+            if (sampleIdx < 0) continue;
             // 缓存列按自然 y 顺序存储（顶部 y=0 → 低频）；复制到 ImageData 时做一次行反转
             const col = buildColumn(sampleIdx);
             for (let y = 0; y < fullHeight; y++) {
@@ -510,8 +483,6 @@ const Visualizer: React.FC<VisualizerProps> = ({
 
     const last = specLastRef.current;
     // 「渲染参数」= 影响单列像素结果的东西（配色/对数刻度/灵敏度/尺寸/FFT）。
-    // 缩放**不属于**渲染参数：列缓存键是 sampleIdx，与 zoom 无关，缩放时清空等于把
-    // 4MB 已算好的列全扔进 GC（每次缩放一次 → GC 抖动的主要原因）。
     const sameRender = last && last.specLogBase === specLogBase
         && last.specPalette === specPalette && last.specCustom === specCustom.join(',')
         && last.peakThreshold === peakThreshold && last.peakColor === peakColor && last.specInvert === specInvert
@@ -544,13 +515,6 @@ const Visualizer: React.FC<VisualizerProps> = ({
         ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, intWidth, specHeight);
         // 每帧处理的 device 列数：查表化后单列成本极低，可放大批量、缩短首次绘制时间。
-        // 但「原生 FFT 还没预计算完」时走的是 JS FFT 兜底，单列贵 50 倍以上，
-        // 这时必须把批量压回去，否则等待期每一帧都是几十毫秒的卡顿。
-        // 【实测结论】分批反而更慢：每 putImageData 一次，整幅 1920×1153 纹理就要重传一次，
-        // 分批 10 次 ≈ 10 倍合成开销（实测 2000ms → 单批 650ms）。所以有预计算数据时一次画完。
-        // 只有「原生 FFT 还没算完、走 JS FFT 兜底」时才分小批，避免每帧几十毫秒卡顿。
-        // 【实测】兜底路径单批 48 列只要 ~2ms（FFT 查表化后并不贵），但一屏 1920 列要 40 帧才画完，
-        // 每次缩放都重启这个长尾 → 观感就是「缩放后画面一格一格往上爬」。直接一次画完。
         const batchPx = fullWidth;
         let cur = 0;
         const step = () => {
@@ -590,12 +554,15 @@ const Visualizer: React.FC<VisualizerProps> = ({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     // 绘制 [x0, x1) 区间的刻度尺 + 拍线
-    // ★ 低配机适配：原先「每根线 / 每个箭头」都单独 beginPath + stroke + fill ——
-    //   整曲缩略时一屏能有上千根拍线，等于上千次状态切换 + 描边 + 填充，主线程直接被拖死。
-    //   现在改成「按样式分组收集坐标 → 每组只 stroke/fill 一次」，绘制调用从上千降到个位数。
     const drawOverlayRegion = (x0: number, x1: number) => {
         const startTime = xToTime(0);
         const endTime = xToTime(intWidth);
+        /**
+         * ★ v0.8.19：**只有刻度（红线 / 节拍线 / 箭头 / 拍号）**才带延迟偏移，频谱与波形按音乐真实时间。
+         *   lineToX(t) 把「谱面时间 t」画在 t + beatLineDelaySec 的位置（正数 = 刻度右移 = 拍子稍晚）。
+         *   时间刻度尺（mm:ss）不用这个映射 —— 它标的是音频时间，必须与波形/频谱严格一致。
+         */
+        const lineToX = (t: number) => timeToX(t + beatLineDelaySec);
         ctx.textAlign = 'center';
         const sceneBottom = waveHeight + specHeight;
         const arrowY0 = sceneBottom + 6;
@@ -629,9 +596,6 @@ const Visualizer: React.FC<VisualizerProps> = ({
         }
 
         // ===== 刻度绘制（v0.7.18）=====
-        // 红线 = 段起点（每条红线自带 BPM，位置由红线的绝对时间决定，改 BPM 不会挪动下一条红线）
-        // 蓝线 = 节拍线：每拍一条，间距 = 60 / 该红线自己的 BPM（BPM 只和蓝线距离关联）
-        // 绘制顺序：先红后蓝 —— 红蓝重合时蓝线叠加在红线上，红线不会盖住蓝线
         const redXs: number[] = [];
         const strongXs: number[] = [];
         const weakXs: number[] = [];
@@ -640,12 +604,12 @@ const Visualizer: React.FC<VisualizerProps> = ({
         const redLabels: { x: number; text: string }[] = [];
         const beatLabels: { x: number; text: string }[] = [];
         // 段起点时间集合（用于避免蓝线编号与红色段起点编号文字重叠）
-        const sectionStartSet = new Set(timingPoints.map(p => Math.round((p.time + beatLineDelaySec) * 1000)));
+        const sectionStartSet = new Set(timingPoints.map(p => Math.round(p.time * 1000)));
 
         // ---- 第一遍：红色段起点（2px）----
         for (let i = 0; i < timingPoints.length; i++) {
             const point = timingPoints[i];
-            const x = timeToX(point.time + beatLineDelaySec);
+            const x = lineToX(point.time);
             if (x < x0 - 2 || x > x1 + 2) continue;
             redXs.push(x);
             redLabels.push({ x, text: point.beatIndex.toString() }); // 红色段起点标全局拍号
@@ -675,15 +639,14 @@ const Visualizer: React.FC<VisualizerProps> = ({
                 const time = point.time + relIndex * interval;
                 if (nextPoint && beatIndex >= nextPoint.beatIndex) break;
                 if (time > Math.min(endTime, sectionEndTime)) break;
-                // 红线节拍线延迟补偿：仅刻度显示 x 加偏移（时间刻度尺/频谱/波形不受影响）
-                const x = timeToX(time + beatLineDelaySec);
+                const x = lineToX(time);
                 if (x < x0 - 2 || x > x1 + 2) { relIndex++; continue; } // 只画区域内的刻度
                 const isDownbeat = relIndex % meter === 0;
                 if (isDownbeat) {
                     strongXs.push(x);
                     if (showArrow) strongArrowXs.push(x);
                     // 强拍标全局拍号；与红色段起点重合时不标，避免文字重叠
-                    if (showBeatLabel && !sectionStartSet.has(Math.round((time + beatLineDelaySec) * 1000))) {
+                    if (showBeatLabel && !sectionStartSet.has(Math.round(time * 1000))) {
                         beatLabels.push({ x, text: beatIndex.toString() });
                     }
                 } else {
@@ -729,14 +692,11 @@ const Visualizer: React.FC<VisualizerProps> = ({
     if (!audioData) return;
 
     const last = overlayLastRef.current;
-    const sameParams = last && last.zoom === viewState.zoom && last.w === intWidth && last.h === intHeight && last.delay === beatLineDelaySec;
+    const sameParams = last && last.zoom === viewState.zoom && last.w === intWidth && last.h === intHeight
+        && last.shift === beatLineDelaySec;
     const dx = last ? Math.round(last.scrollLeft - viewState.scrollLeft) : 0;
 
     // ★ v0.8.19：完全没变化就一次都不画。
-    //   导入 timing 后满屏都是拍线（上千条竖线 + 箭头 + 编号），一次整幅重绘是几十毫秒；
-    //   而播放时 App 每 100ms 推一次 currentTime 重渲染，只要 timingPoints 数组换了引用，
-    //   这个 effect 就会重跑 → 每秒 10 次整幅重绘 → 看起来就是"导入 timing 之后开始卡"。
-    //   这里用「数组引用 + 视口位置」双重判断：没变就直接返回。
     if (sameParams && last && last.points === timingPoints && dx === 0) return;
 
     if (sameParams && dx !== 0 && Math.abs(dx) < intWidth) {
@@ -754,8 +714,8 @@ const Visualizer: React.FC<VisualizerProps> = ({
         ctx.clearRect(0, 0, intWidth, intHeight);
         drawOverlayRegion(0, intWidth);
     }
-    overlayLastRef.current = { zoom: viewState.zoom, scrollLeft: viewState.scrollLeft, w: intWidth, h: intHeight, delay: beatLineDelaySec, points: timingPoints };
-  }, [audioData, viewState, timingPoints, intWidth, intHeight, waveHeight, specHeight, beatLineDelaySec, drawTick]);
+    overlayLastRef.current = { zoom: viewState.zoom, scrollLeft: viewState.scrollLeft, w: intWidth, h: intHeight, points: timingPoints, shift: beatLineDelaySec };
+  }, [audioData, viewState, timingPoints, intWidth, intHeight, waveHeight, specHeight, drawTick, beatLineDelaySec]);
 
   // --- 独立播放头层（AU 式局部重绘：每帧只擦旧列 + 画新列，开销极小，跟随显示器刷新率）---
   const viewStateRef = useRef(viewState);
@@ -802,7 +762,8 @@ const Visualizer: React.FC<VisualizerProps> = ({
     const mouseY = e.clientY - rect.top;
 
     if (mouseY > waveHeight + specHeight) {
-        // 底部时间轴区域：指示器检测与拖动；拍线延迟需反向扣减，与显示位置一致
+        // 底部时间轴区域：指示器检测与拖动
+        // ★ v0.8.19：刻度带延迟偏移 → 命中检测先把光标位置换算回「谱面时间」
         const mouseTime = xToTime(mouseX) - beatLineDelaySec;
         // ① 红色段起点优先：抓住红线的箭头/竖线即可左右拖动 → 直接改这条红线的时间戳
         {
@@ -877,7 +838,7 @@ const Visualizer: React.FC<VisualizerProps> = ({
 
       // 1) 时间轴指示器拖动（Offset/BPM 微调）
       if (dragging) {
-          // 拍线延迟：交互按显示拍线位置计算（扣回延迟换算真实时间）
+          // ★ v0.8.19：刻度画在 t + delay 处，反算回谱面时间才能让线跟手
           const mouseTime = xToTime(mouseX) - beatLineDelaySec;
 
           if (dragging.type === 'offset') {
@@ -917,7 +878,7 @@ const Visualizer: React.FC<VisualizerProps> = ({
               if (!panState.moved) setPanState(p => p ? { ...p, moved: true } : p);
           });
       }
-  }, [dragging, panState, audioData, viewState, timingPoints, onUpdateBpm, onUpdateOffset, onScrollChange, width, beatLineDelaySec, onUpdateSectionTime]); 
+  }, [dragging, panState, audioData, viewState, timingPoints, onUpdateBpm, onUpdateOffset, onScrollChange, width, onUpdateSectionTime, beatLineDelaySec]); 
 
   const handleMouseUp = useCallback((e: MouseEvent) => {
       // 若按下后未发生拖拽，视为点击跳转播放位置
@@ -925,10 +886,11 @@ const Visualizer: React.FC<VisualizerProps> = ({
           const rect = overlayRef.current?.getBoundingClientRect();
           if (rect) {
               const mouseX = e.clientX - rect.left;
-              const t = xToTime(mouseX);
+              const t = xToTime(mouseX);                 // 播放头落点（音频真实时间）
+              const gridT = t - beatLineDelaySec;        // 光标对应的谱面时间（刻度带偏移）
               // 红色小节线（段起点）命中检测：±4px 内视为点击该段落 → 配置面板跳转
               const hitThreshold = 4 / viewState.zoom;
-              const hit = timingPoints.find((p) => Math.abs(p.time - (t - beatLineDelaySec)) < hitThreshold);
+              const hit = timingPoints.find((p) => Math.abs(p.time - gridT) < hitThreshold);
               if (hit) {
                   onSeek(t);
                   onSectionClick(hit.id);
@@ -939,7 +901,7 @@ const Visualizer: React.FC<VisualizerProps> = ({
       }
       setDragging(null);
       setPanState(null);
-  }, [panState, audioData, onSeek, onSectionClick, timingPoints, viewState.zoom, beatLineDelaySec]);
+  }, [panState, audioData, onSeek, onSectionClick, timingPoints, viewState.zoom]);
 
   useEffect(() => {
     if (dragging || panState) {
@@ -952,6 +914,25 @@ const Visualizer: React.FC<VisualizerProps> = ({
     };
   }, [dragging, panState, handleMouseMove, handleMouseUp]);
 
+  /**
+   * ★ v0.8.19 双击节拍线：吸附到那条线的精确时间（12px 内才算命中，否则什么都不做）。
+   *   节拍线既包括用户编辑过的红线（段起点），也包括按 BPM 推算出的普通拍线 ——
+   *   两者都在「拍索引」体系里，所以先用点击位置反推最近的拍索引，再用 getTimeAtBeatIndex
+   *   拿到它的准确时间。空白位置不定位（避免误触把播放头甩到别处）。
+   */
+  const handleDoubleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!audioData) return;
+    const rect = overlayRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    // 光标位置 → 谱面时间（刻度带延迟偏移）；定位时再加回偏移，播放头正好压在线上
+    const t = xToTime(e.clientX - rect.left) - beatLineDelaySec;
+    const { point } = getPointAtTime(t, timingPoints);
+    const beatIdx = Math.round(point.beatIndex + (t - point.time) / (60 / Math.max(1, point.bpm)));
+    const beatTime = getTimeAtBeatIndex(beatIdx, timingPoints);
+    const threshold = Math.max(0.012, 12 / Math.max(1, viewState.zoom));
+    if (Math.abs(beatTime - t) <= threshold) onSeek(beatTime + beatLineDelaySec);
+  }, [audioData, timingPoints, viewState.zoom, onSeek, beatLineDelaySec]);
+
   return (
     <div className="relative select-none w-full h-full bg-black">
        <canvas ref={waveformRef} className="absolute top-0 left-0 pointer-events-none" />
@@ -960,6 +941,7 @@ const Visualizer: React.FC<VisualizerProps> = ({
           ref={overlayRef} 
           className={`absolute top-0 left-0 ${panState ? 'cursor-grabbing' : 'cursor-crosshair'}`} 
           onMouseDown={handleMouseDown} 
+          onDoubleClick={handleDoubleClick}
           title={t('vizTitle')}
        />
        {/* 独立播放头层：DOM 合成层（transform 定位，不重光栅、不上传纹理），跟随屏幕刷新率，不拦截鼠标 */}

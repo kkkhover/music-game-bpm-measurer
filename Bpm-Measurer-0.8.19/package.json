@@ -1,7 +1,9 @@
 {
   "name": "bpm-measurer-util",
   "private": true,
-  "version": "0.8.18",
+  "version": "0.8.19",
+  "description": "BPM 测速助手 —— 音乐游戏 timing 制作工具",
+  "author": "kkkhover",
   "type": "module",
   "main": "boot.cjs",
   "scripts": {
@@ -33,10 +35,11 @@
   "build": {
     "appId": "com.bpmmeasurer.util",
     "productName": "BPM 测速助手",
+    "artifactName": "BPM.Setup.${version}.${ext}",
     "asar": false,
     "directories": {
       "buildResources": "resources",
-      "output": "D:/tmp/bpm app/BPM测速助手_v0.8.18"
+      "output": "D:/tmp/bpm app/BPM测速助手_v0.8.19"
     },
     "files": [
       "dist/**/*",
@@ -44,15 +47,6 @@
       "boot.cjs",
       "maphelper/**/*",
       "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "resources",
-        "to": "resources",
-        "filter": [
-          "**/*"
-        ]
-      }
     ],
     "mac": {
       "target": "dmg"
@@ -85,8 +79,5 @@
     "linux": {
       "target": "AppImage"
     }
-  },
-  "dependencies": {
-    "soundtouchjs": "^0.3.0"
   }
 }

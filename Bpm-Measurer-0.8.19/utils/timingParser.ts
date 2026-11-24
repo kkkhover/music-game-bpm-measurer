@@ -1,14 +1,4 @@
 // ===== 谱面 Timing 解析器：把任意游戏谱面/文本文件转成软件可读配置 =====
-// 支持格式（按扩展名/内容识别）：
-//   .json  → 软件自身导出的配置（{offset, points:[{beatIndex,bpm,sv,svRate,timeSec}]}）
-//            或 Phigros(RPE) / ADOFAI / vivid·stasis 谱面 JSON
-//   .osu   → osu! 谱面 [TimingPoints] 段（红线 BPM + 绿线 SV）
-//   .mc    → Malody 谱面 JSON（time 数组 + effect 下落速度）
-//   .aff   → Arcaea 谱面 timing(...) 行
-//   .txt   → 通用文本：每行「时间,BPM」（时间 ms 或 s 自动识别），也兼容上面各种 JSON 导出文件
-// 读取优化（v0.7.21）：去 BOM / 统一换行；osu / Arcaea / txt / Phigros 导入写入绝对时间 timeSec；
-//                     txt 时间单位按整份文件判定；osu 首条红线不再重复；开头绿线（SV）不再丢失。
-// 返回软件配置（globalOffset + rawPoints），解析失败返回 null。
 
 export interface ParsedTimingConfig {
   offset: number;          // 秒
@@ -89,8 +79,6 @@ function parseJsonConfig(content: string): ParsedTimingConfig | null {
 // ---------- osu!：解析 [TimingPoints] 段 ----------
 function parseOsu(content: string): ParsedTimingConfig | null {
   // 兼容两种输入：完整 .osu 谱面（[TimingPoints] 节）/ 纯 timing 行文本（软件导出的 osu 格式 txt）。
-  // 必须用「整行 == [TimingPoints]」定位节标题——导出 txt 的注释头里也含 [TimingPoints] 字样，
-  // 用 indexOf 会命中注释行导致正文被错误截断
   const lines = content.split(/\r?\n/);
   const markerIdx = lines.findIndex((l) => l.trim() === '[TimingPoints]');
   let body = markerIdx === -1 ? content : lines.slice(markerIdx + 1).join('\n');
@@ -337,8 +325,6 @@ function parseTxt(content: string): ParsedTimingConfig | null {
   if (rows.length === 0) return null;
 
   // 时间单位判定（读取优化：按整份文件统一判定，不再逐行猜）
-  //  · 最大时间 > 1000 → 毫秒（毫秒谱面很常见；秒制谱面基本不会超过 1000s）
-  //  · 最大时间 ≤ 1000 → 秒（若是毫秒，说明整首不到 1 秒，不可能）
   const maxT = Math.max(...rows.map(r => r.timeMs));
   const isMs = maxT > 1000;
   if (!isMs) rows.forEach(r => { r.timeMs = r.timeMs * 1000; });

@@ -88,8 +88,6 @@ const OverviewBar: React.FC<OverviewBarProps> = ({ peaks, duration, currentTime,
     if (duration <= 0 || n < 1) return;
 
     // ★ 关键：按「显示列」聚合，而不是逐峰值建子路径。
-    //   设备像素列数 = bw（默认 2 倍 dpr），每列取该区间内峰值的 min/max —— 视觉与旧版一致
-    //   （旧版 19 万条子路径画进 900 多像素宽，本来就有大量重叠），子路径数降到 bw 量级。
     const cols = Math.min(bw, n);
     const mid = h / 2;
     const amp = h / 2 - 2;

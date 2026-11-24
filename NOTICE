@@ -39,8 +39,7 @@ Licensed under the Apache License, Version 2.0（许可全文见同目录的 LIC
    - 9 语言界面（中/英/日/韩/法/德/西/俄/葡）
    - 频谱 / 声谱与内存优化、多游戏 timing 导出等
 
-   被修改过的源文件已在代码注释中标注（搜索 “v0.8.” 可见逐版改动），
-   完整变更列表见随 Releases 发布的《更新日志.md》。
+   被修改过的源文件已在代码注释中标注（搜索 “v0.8.” 可见逐版改动）。
 
 ===============================================================================
 4. 第三方组件 / Third-party notices
@@ -51,7 +50,6 @@ Licensed under the Apache License, Version 2.0（许可全文见同目录的 LIC
    - Electron、React、Vite、electron-builder 等：MIT
    - lucide-react：ISC
    - TypeScript：Apache-2.0
-   - soundtouchjs：LGPL-2.1 —— 本产品以依赖形式引用、未修改其源码
 
    （以上第三方组件的许可与本产品自身的许可相互独立，各自按其条款执行。）
 

@@ -3,7 +3,8 @@ import {
     Play, Pause, Square, ZoomIn, ZoomOut, Upload, Music, 
     Volume2, VolumeX, Plus, Trash2, Settings, 
     PanelRightClose, PanelRightOpen, Sliders, 
-    Download, FileUp, Info, MousePointer2, Keyboard, HelpCircle, Gauge, ChevronDown, LocateFixed, Check, X, ArrowUp
+    Download, FileUp, Info, MousePointer2, Keyboard, HelpCircle, Gauge, ChevronDown, LocateFixed, Check, X, ArrowUp,
+    Copy, FolderOpen, Clock, ChevronRight
 } from 'lucide-react';
 import Visualizer from './components/Visualizer';
 import OverviewBar from './components/OverviewBar';
@@ -11,7 +12,7 @@ import SettingsModal from './components/SettingsModal';
 import { AudioData, ViewState, TimingPoint } from './types';
 import { extractPeaks } from './utils/audioUtils';
 import { recalculateTiming, getPointAtTime, getTimeAtBeatIndex } from './utils/timingUtils';
-import { parseTimingFile } from './utils/timingParser';
+import { parseTimingFile, type ParsedTimingConfig } from './utils/timingParser';
 import { handleFileUpload } from './utils/fileUtils';
 import { generateOsuTimingPoints } from './utils/osuExport';
 import { generateAdofaiChart, generateMalodyChart, generatePhigrosChart, generateArcaeaAff, generateVividStasisChart } from './utils/gameExports';
@@ -21,8 +22,8 @@ import { t, setLang } from './utils/i18n';
 const MIN_ZOOM = 10;
 const MAX_ZOOM = 1500;
 const DEFAULT_ZOOM = 250;
-// ★ v0.8.21 视口自动跟随：播放头越过视口右侧 90% → 视口**直接跳到**下一页，播放头落回左侧 10%
-//   与侧栏点击段落一致：瞬跳，不做滚动动画（v0.8.20 的「分帧滚动过去」已移除）。
+// ★ v0.8.19 视口自动跟随：播放头越过视口右侧 90% → 视口**直接跳到**下一页，播放头落回左侧 10%
+//   与侧栏点击段落一致：瞬跳，不做滚动动画（早前版本的「分帧滚动过去」已移除）。
 const FOLLOW_TRIGGER_RATIO = 0.9;
 const FOLLOW_LEAD_RATIO = 0.1;
 
@@ -252,13 +253,30 @@ const formatTime = (t: number): string => {
     return `${m}:${s.toFixed(1).padStart(4, '0')}`;
 }
 
+// ===== 谱面导入（.osz / .osu / 谱面文件夹）：候选难度 =====
+interface MapCandidate {
+    name: string;    // 文件名
+    path: string;    // 磁盘路径
+    text: string;    // .osu 原文（只为解析 timing 用）
+    title: string;   // 曲名
+    artist: string;
+    version: string; // 难度名
+}
+
+/** 从 .osu 文本里取展示用元信息 */
+const parseOsuMeta = (text: string): { title: string; artist: string; version: string } => {
+    const get = (k: string): string => {
+        const m = text.match(new RegExp(`^\\s*${k}\\s*:\\s*(.*)$`, 'im'));
+        return m ? m[1].trim() : '';
+    };
+    return { title: get('Title'), artist: get('Artist'), version: get('Version') };
+};
+
 function App() {
   const [audioContext] = useState(() => new (window.AudioContext || (window as any).webkitAudioContext)());
   const [audioData, setAudioData] = useState<AudioData | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   // 音频的**绝对路径**（Electron 下由原生对话框给出）。
-  // 导出 Malody 谱面包(.mcz) 要把音频本体一起打进包里，所以这里必须留住它 ——
-  // 只留 fileName 是拿不到文件的。
   const [audioPath, setAudioPath] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -274,9 +292,20 @@ function App() {
   const [showTopBtn, setShowTopBtn] = useState(false); // 变速段落区回到顶部悬浮球
   const sidebarScrollRef = useRef<HTMLDivElement>(null);
 
+  // ===== 谱面导入（.osz / .osu / 谱面文件夹）=====
+  const [mapCandidates, setMapCandidates] = useState<MapCandidate[]>([]); // 多个难度供选择
+  const [mapSourceName, setMapSourceName] = useState(''); // 谱面包 / 文件夹名（展示用）
+  const [activeOsuName, setActiveOsuName] = useState(''); // 当前已载入 timing 的 .osu
+  const [mapDir, setMapDir] = useState(''); // 谱面所在目录（切换难度时去这里找音频）
+  const [showMapDrawer, setShowMapDrawer] = useState(false); // 「谱面难度」抽屉
+  const [importMenuOpen, setImportMenuOpen] = useState(false); // 导入按钮的二级菜单
+  const [copied, setCopied] = useState(false); // 「复制 timing」成功反馈
+  const copyTimerRef = useRef<number | null>(null);
+  // 左下角播放位置输入框（可直接键入秒数跳转）
+  const [timeText, setTimeText] = useState('0.000');
+  const timeFocusRef = useRef(false);
+
   // ===== 制谱侧栏（osu-maphelper 独立窗口程序）启动状态 =====
-  //   idle / launching / ok / error。原来这段逻辑在设置面板里，
-  //   按需求 6 移到顶栏（紧邻「导入音频」，即截图黄圈位置）。
   const [mhState, setMhState] = useState<'idle' | 'launching' | 'ok' | 'error'>('idle');
   const [mhMsg, setMhMsg] = useState('');
   const launchSidebar = useCallback(async () => {
@@ -328,10 +357,6 @@ function App() {
   }, []);
 
   // ===== 固定 1080p 渲染 =====
-  // 画布位图宽度由 Visualizer 锁死为 1920 设备像素（与屏幕缩放/窗口大小无关），这里只给
-  // 「清晰度微调倍率」：1.0 = 正好 1080p（默认），<1 更省，>1 更清晰（更吃内存）。
-  // 旧版本用户为了对抗卡顿常把 renderScale 调到 0.5（位图只有 ~960px 宽，糊得厉害），
-  // 迁移逻辑会把它恢复成 1.0 —— 渲染路径已重写，不该再靠糊画质换流畅。
   const renderDpr = useMemo(
     () => Math.max(0.5, Math.min(2, settings.renderScale)),
     [settings.renderScale]
@@ -349,8 +374,29 @@ function App() {
     const g = masterGainRef.current;
     if (g) g.gain.setTargetAtTime(settings.musicVolume, audioContext.currentTime, 0.02);
   }, [settings.musicVolume, audioContext]);
+
+  /**
+   * ★ v0.8.19：常驻一路**静音**输出，让音频流从启动起就保持 running。
+   *   原因：outputLatency 只有在输出流真正跑起来之后才有值（本机首次播放前读到的恒为 0），
+   *   而它正是起播提前量的一部分 —— 不预热的话**第一次播放**会漏补偿 50ms 左右。
+   */
+  useEffect(() => {
+    const ctx = audioContext;
+    const buf = ctx.createBuffer(1, Math.max(1, Math.ceil(ctx.sampleRate * 0.05)), ctx.sampleRate);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const g = ctx.createGain();
+    g.gain.value = 0; // 完全静音，只为了让流保持运行
+    src.connect(g);
+    g.connect(ctx.destination);
+    try { src.start(); } catch (e) {}
+    void ctx.resume().catch(() => {});
+    return () => { try { src.stop(); } catch (e) {} g.disconnect(); };
+  }, [audioContext]);
   
   const [globalOffset, setGlobalOffset] = useState(0);
+  const [timingLoaded, setTimingLoaded] = useState(false); // 导入过 timing（无音频时也能复制/导出）
   const [rawPoints, setRawPoints] = useState<Omit<TimingPoint, 'time'>[]>([
       { id: 'initial', beatIndex: 0, bpm: 120, sv: true }
   ]);
@@ -417,18 +463,16 @@ function App() {
   
   // 播放倍速（0.25x - 2.0x），ref 供实时读取
   const [playbackRate, setPlaybackRate] = useState(1.0);
+  /** 最近一次实测并冻结的输出链路延迟（毫秒）：只用于设置面板如实显示，让用户能核对软件补了多少 */
+  const [outputLatencyMs, setOutputLatencyMs] = useState(0);
   const playbackRateRef = useRef(1.0);
   const playheadRef = useRef(0); // 播放头位置（秒）：每帧更新，供 Visualizer 独立播放头层实时读取（不经过 React 渲染）
   
   // ★ v0.8.19：这里必须 useMemo。
-  //   recalculateTiming 每次调用都返回新数组，而播放时 currentTime 每 100ms 触发一次 App 重渲染，
-  //   于是 timingPoints 引用每 100ms 变一次 → Visualizer 里所有依赖它的绘制 effect 全部重跑，
-  //   其中「拍线覆盖层」要把满屏上千条拍线整幅重画 → 导入 timing 之后就开始明显卡。
-  //   依赖只有 offset 与原始点集，缓存后数组引用稳定，绘制 effect 不再被无意义唤醒。
   const timingPoints = useMemo(() => recalculateTiming(globalOffset, rawPoints), [globalOffset, rawPoints]);
   const [viewState, setViewState] = useState<ViewState>({ zoom: DEFAULT_ZOOM, scrollLeft: 0 });
   /**
-   * ★ v0.8.20：视口自动跟随播放头。
+   * ★ v0.8.19：视口自动跟随播放头。
    *   播放时白条滑出当前可视区域（越过右边界），视口自动"翻页"到下一区域，
    *   让白条落回视口左侧 —— 长曲目不用再手动拖时间轴。
    *   用户主动拖动/滚动时间轴时自动关闭（否则想看别处会被立刻拽回），可用底部按钮重新开启。
@@ -457,14 +501,10 @@ function App() {
     return point.bpm;
   }, [currentTime, timingPoints]);
 
-  // 双击变速段落卡片 → 时间轴滚动到该红线位置（居中显示；不改动播放位置）
-  const handleJumpToTimeline = useCallback((sec: number) => {
-    setViewState(v => {
-      const maxScroll = Math.max(0, (audioData?.duration || 0) * v.zoom - containerWidth);
-      const targetX = sec * v.zoom;
-      return { ...v, scrollLeft: Math.max(0, Math.min(targetX - containerWidth / 2, maxScroll)) };
-    });
-  }, [audioData, containerWidth]);
+  // 左下角播放位置输入框：不在编辑状态时跟随播放位置刷新
+  useEffect(() => {
+    if (!timeFocusRef.current) setTimeText(currentTime.toFixed(3));
+  }, [currentTime]);
 
   // 修改全局 Offset：红线位置都是绝对时间（v0.7.18）→ 平移时整体跟随，保持红线之间的相对关系
   const handleOffsetChange = useCallback((v: number) => {
@@ -495,8 +535,9 @@ function App() {
 
   // ===== 播放核心（对照原源码恢复：AudioBufferSourceNode + 墙钟公式）=====
   const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
-  const startTimeRef = useRef<number>(0);   // 播放开始的墙钟时间
-  const startOffsetRef = useRef<number>(0); // 播放开始的内容偏移
+  const startTimeRef = useRef<number>(0);   // 起播时的 audioContext.currentTime（渲染时钟锚点）
+  const bufferStartRef = useRef<number>(0); // 起播时「送进渲染图」的内容位置（秒，已含输出延迟提前量）
+  const latencyRef = useRef<number>(0);     // 本次起播冻结的输出链路延迟（秒）：中途不再重读，否则节拍器/播放头会漂
   const rafRef = useRef<number | null>(null);
   const lastScheduledIndexRef = useRef<number>(-Infinity);
   const currentTimeRef = useRef<number>(0); // 与 currentTime state 同步，供 play/handleSeek 读取最新值
@@ -607,137 +648,218 @@ function App() {
   }, [timingPoints, handleOffsetChange]);
 
   // ★ v0.8.16：stop() 定义在下方（第 ~780 行），而 handleFileUpload 在上方。
-  //   函数体虽然在运行时才求值、且 handleFileUpload 只被事件/键盘 effect 调用（渲染提交后才跑），
-  //   但为了彻底避免 TDZ 隐患，这里用 ref 转发：下方 stop() 定义后立刻把最新实现写进这个 ref。
   const stopRef = useRef<() => void>(() => {});
 
   // forcedPath：命令行 --open-audio=<路径> / 拖文件到 exe 上的自动打开（跳过文件对话框）
   const [importing, setImporting] = useState(false);
   const importingRef = useRef(false);
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement> | null = null, forcedPath?: string) => {
-    // ★ v0.8.19 修「要导入两次才成功」：
-    //   顶栏「导入音频」是个 <label> 包 <input type=file>，点它 **浏览器已经弹过一次系统文件框**，
-    //   选完文件后 onChange 才把 e 交进来。旧代码不管 e、一律先走 electronAPI.openAudioFile()，
-    //   于是又弹第二次对话框 → 第一次选的文件被丢弃，用户感觉"第一次导入没反应"。
-    //   现在：只要 e 里已经带了文件，就直接用它，绝不再弹框。
-    const picked = e?.target?.files?.[0] ?? null;
-    if (picked && e?.target) e.target.value = ''; // 允许再次选择同一个文件（否则 change 不再触发）
-    if (!picked && importingRef.current) return;  // 另一个导入还在解码 → 忽略重复触发
-
-    let file: File | null = picked;
-
-    if (!file && forcedPath) {
-      setAudioPath(forcedPath); // 留住绝对路径，供「导出 Malody 谱面包」打包音频用
-      const data = await (window as any).electronAPI.readAudioFile(forcedPath);
-      if (data) {
-        const arrayBuffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-        file = new File([arrayBuffer], forcedPath.split(/[\\/]/).pop() || 'unknown', { type: 'audio/*' });
-      }
-    } else if (!file && typeof window !== 'undefined' && 'electronAPI' in window) {
-      const filePath = await (window as any).electronAPI.openAudioFile();
-      if (filePath) {
-        setAudioPath(filePath); // 留住绝对路径，供「导出 Malody 谱面包」打包音频用
-        // 通过 IPC 读取文件内容（contextIsolation 下无法直接使用 Node fs）
-        const data = await (window as any).electronAPI.readAudioFile(filePath);
-        if (data) {
-          const arrayBuffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-          file = new File([arrayBuffer], filePath.split(/[\\/]/).pop() || 'unknown', { type: 'audio/*' });
-        }
-      }
-    }
-
-    if (!file) return;
-    setFileName(file.name);
-    // ★ 解码 7 分钟的歌要 1~3 秒，旧代码这段时间**没有任何反馈**（按钮不变、界面不动），
-    //   用户以为没反应就会再点一次 —— 这也是"要导入两次"的另一半原因。
+  /** 解码音频并载入（导入音频 / .osu / .osz 都走这里） */
+  const loadAudioBuffer = useCallback(async (arrayBuffer: ArrayBuffer, name: string, absPath: string | null): Promise<boolean> => {
+    setFileName(name);
+    if (absPath) setAudioPath(absPath); // 留住绝对路径，供「导出 Malody 谱面包」打包音频用
+    // 解码 7 分钟的歌要 1~3 秒，期间按钮显示「解码中…」，避免用户以为没反应而重复点击
     importingRef.current = true;
     setImporting(true);
     const t0 = performance.now();
     try {
-        const arrayBuffer = await file.arrayBuffer();
         if (audioContext.state === 'suspended') await audioContext.resume();
         const decodedBuffer = await audioContext.decodeAudioData(arrayBuffer);
         const peaks = extractPeaks(decodedBuffer);
         setAudioData({ buffer: decodedBuffer, peaks, duration: decodedBuffer.duration });
         setGlobalOffset(0.1);
         setRawPoints([{ id: 'initial', beatIndex: 0, bpm: 120, sv: true }]);
+        setTimingLoaded(false);
         currentTimeRef.current = 0;
         playheadRef.current = 0;
         setCurrentTime(0);
         setViewState({ zoom: DEFAULT_ZOOM, scrollLeft: 0 });
-        // ★ v0.8.16 修 Bug：原来这里只 setIsPlaying(false)，**没有真正停止音源** ——
-        //   播放中导入新音频时，旧 AudioBufferSourceNode 会继续发声（两首歌声音重叠），
-        //   而且下一次 play() 会用新 source 覆盖 sourceNodeRef.current，
-        //   旧句柄永久丢失 → 之后按空格也停不掉它，只能等它自然播完。
-        //   改成调用 stop()（内部会断开并置空旧 sourceNodeRef）才是彻底的停止。
+        // 播放中导入新音频时，旧 AudioBufferSourceNode 必须真正停掉（否则两首歌声音重叠）
         stopRef.current();
-        console.info(`[import] ${file.name} 解码完成 ${decodedBuffer.duration.toFixed(1)}s，耗时 ${Math.round(performance.now() - t0)}ms`);
+        console.info(`[import] ${name} 解码完成 ${decodedBuffer.duration.toFixed(1)}s，耗时 ${Math.round(performance.now() - t0)}ms`);
+        return true;
     } catch (err) {
         console.error('[import] 解码失败：', err);
         alert(t('decodeError'));
+        return false;
     } finally {
         importingRef.current = false;
         setImporting(false);
     }
+  }, [audioContext]);
+
+  /** 把解析出的 timing 写进红线（导入 .osu / timing 文件共用） */
+  const applyParsedConfig = useCallback((cfg: ParsedTimingConfig) => {
+      setTimingLoaded(true);
+      setGlobalOffset(cfg.offset);
+      setRawPoints(cfg.points.map(p => ({
+          id: crypto.randomUUID(),
+          beatIndex: p.beatIndex,
+          bpm: p.bpm,
+          meter: typeof p.meter === 'number' && p.meter > 0 ? p.meter : 4, // ★ v0.8.17：读回拍号
+          sv: p.sv !== false, // 默认开启绿线
+          svRate: p.svRate && p.svRate > 0 ? p.svRate : 0,
+          timeSec: typeof p.timeSec === 'number' && isFinite(p.timeSec) ? p.timeSec : undefined, // 红线绝对时间
+      })));
+  }, []);
+
+  /** 载入一个 .osu 的 timing（在抽屉里切换难度也走这里） */
+  const applyOsuText = useCallback((text: string): boolean => {
+      const cfg = parseTimingFile(text, 'map.osu');
+      if (!cfg || cfg.points.length === 0) { alert(t('invalidOsuTiming')); return false; }
+      applyParsedConfig(cfg);
+      return true;
+  }, [applyParsedConfig]);
+
+  /** 从 .osu 文本里取 AudioFilename（切换到别的难度时按它找音频） */
+  const audioNameOfOsu = useCallback((text: string): string => {
+      const m = text.match(/^\s*AudioFilename\s*:\s*(.+?)\s*$/im);
+      return m ? m[1].trim() : '';
+  }, []);
+
+  /** .osz / .osu / 谱面文件夹 统一落地：先解音频，再读 timing */
+  const applyMapImport = useCallback(async (r: any) => {
+      const api = (window as any).electronAPI;
+      if (!api) return;
+      if (!r || !r.ok) { alert(`${t('mapImportFailed')}：${r?.error || ''}`); return; }
+      const bytes = await api.readAudioFile(r.audioPath);
+      if (!bytes) { alert(t('mapImportFailed')); return; }
+      const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      const okAudio = await loadAudioBuffer(buf as ArrayBuffer, r.audioName, r.audioPath);
+      if (!okAudio) return;
+      const cands: MapCandidate[] = (r.osuFiles || []).map((f: any) => ({ ...f, ...parseOsuMeta(f.text) }));
+      setMapCandidates(cands);
+      setMapDir(r.dir || '');
+      setMapSourceName(r.sourceName || String(r.dir || '').split(/[\\/]/).filter(Boolean).pop() || '');
+      if (cands.length) {
+          setActiveOsuName(cands[0].name);
+          applyOsuText(cands[0].text);
+          setShowMapDrawer(cands.length > 1);
+      }
+  }, [loadAudioBuffer, applyOsuText]);
+
+  /** 抽屉里切换难度：那份 .osu 引用的音频不一样时，连音频一起换掉 */
+  const selectOsuDifficulty = useCallback(async (name: string) => {
+      const cand = mapCandidates.find(c => c.name === name);
+      if (!cand) return;
+      setActiveOsuName(name);
+      const api = (window as any).electronAPI;
+      const want = audioNameOfOsu(cand.text);
+      const changed = !!want && want.toLowerCase() !== String(fileName || '').toLowerCase();
+      if (changed && api?.findMapAudio && mapDir) {
+          const found = await api.findMapAudio(mapDir, want);
+          const bytes = found ? await api.readAudioFile(found.path) : null;
+          if (bytes) {
+              const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+              await loadAudioBuffer(buf as ArrayBuffer, found.name, found.path);
+          } else {
+              alert(`${t('mapImportFailed')}：${want}`); // 音频缺失 → 保持当前音频，只换 timing
+          }
+      }
+      applyOsuText(cand.text);
+  }, [mapCandidates, mapDir, fileName, audioNameOfOsu, loadAudioBuffer, applyOsuText]);
+
+  /** 按磁盘路径导入：音频 / .osu / .osz */
+  const importPath = useCallback(async (p: string) => {
+      const api = (window as any).electronAPI;
+      if (!api) return;
+      const ext = (p.split('.').pop() || '').toLowerCase();
+      if (ext === 'osz') { await applyMapImport(await api.readMapPackage(p)); return; }
+      if (ext === 'osu') { await applyMapImport(await api.readOsuFile(p)); return; }
+      // 音频：读字节 → 解码（谱面候选清空，避免抽屉里留着上一首的难度）
+      const bytes = await api.readAudioFile(p);
+      if (!bytes) {
+          // 不是音频（多半是把谱面文件夹拖到 exe 上）→ 按文件夹扫一遍
+          if (api.scanMapFolder) await applyMapImport(await api.scanMapFolder(p));
+          return;
+      }
+      const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      setMapCandidates([]); setMapSourceName(''); setActiveOsuName(''); setMapDir(''); setShowMapDrawer(false);
+      await loadAudioBuffer(buf as ArrayBuffer, p.split(/[\\/]/).pop() || 'unknown', p);
+  }, [applyMapImport, loadAudioBuffer]);
+
+  /** 顶部「导入」主按钮：Electron 走原生对话框（音频 / .osu / .osz 一起选） */
+  const handleImportClick = useCallback(async () => {
+      const api = (window as any).electronAPI;
+      if (!api?.openImportFile) { (document.getElementById('audio-file-input') as HTMLInputElement | null)?.click(); return; }
+      const p = await api.openImportFile();
+      if (p) await importPath(p);
+  }, [importPath]);
+
+  /** 导入谱面文件夹（选 osu! Songs 下的单曲文件夹） */
+  const handleImportFolder = useCallback(async () => {
+      const api = (window as any).electronAPI;
+      if (!api?.openMapFolder) return;
+      const dir = await api.openMapFolder();
+      if (!dir) return;
+      await applyMapImport(await api.scanMapFolder(dir));
+  }, [applyMapImport]);
+
+  /** 浏览器兜底：<input type=file> 直接选的音频文件 */
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement> | null = null, forcedPath?: string) => {
+    const picked = e?.target?.files?.[0] ?? null;
+    if (picked && e?.target) e.target.value = ''; // 允许再次选择同一个文件
+    if (!picked && importingRef.current) return;  // 另一个导入还在解码 → 忽略重复触发
+    let file: File | null = picked;
+    if (!file && forcedPath) {
+      const data = await (window as any).electronAPI.readAudioFile(forcedPath);
+      if (data) {
+        const arrayBuffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+        file = new File([arrayBuffer], forcedPath.split(/[\\/]/).pop() || 'unknown', { type: 'audio/*' });
+      }
+    }
+    if (!file) return;
+    await loadAudioBuffer(await file.arrayBuffer(), file.name, forcedPath || null);
   };
 
   // 命令行 `--open-audio=<路径>`（把音频文件拖到 exe 图标上 / 资源管理器「打开方式」）→ 启动后自动载入
   // 用 ref 转发，避免把 handleFileUpload 写进依赖导致监听器反复重建
-  const loadAudioRef = useRef(handleFileUpload);
-  loadAudioRef.current = handleFileUpload;
+  const loadAudioRef = useRef(importPath);
+  loadAudioRef.current = importPath;
   useEffect(() => {
     const api = (window as any).electronAPI;
     if (!api?.onAutoOpenAudio) return;
-    const off = api.onAutoOpenAudio((p: string) => { void loadAudioRef.current(null, p); });
+    const off = api.onAutoOpenAudio((p: string) => { void loadAudioRef.current(p); });
     return () => { off?.(); };
   }, []);
 
-  const handleExportJson = () => {
-      const config = {
-          version: "1.0",
-          offset: globalOffset,
-          // timeSec = 红线绝对时间（秒）：带上它，重新导入后红线位置/独立关系（改 BPM 不挪动）100% 保留
-          points: rawPoints.map(p => ({ beatIndex: p.beatIndex, bpm: p.bpm, meter: p.meter ?? 4, sv: p.sv !== false, svRate: p.svRate, timeSec: p.timeSec }))
-      };
-      const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `timing_config_${new Date().getTime()}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-  };
+  /** 当前编辑结果 → osu! timing 文本（纯数据，没有任何注释/提示行，可直接全选替换） */
+  const buildTimingText = useCallback((): string => {
+      if (rawPoints.length === 0) return '';
+      const baseBpm = rawPoints[0]?.bpm || 182;
+      return generateOsuTimingPoints(globalOffset, rawPoints, baseBpm);
+  }, [globalOffset, rawPoints]);
 
-  const handleImportJson = (e: React.ChangeEvent<HTMLInputElement>) => {
+  /** 复制到剪贴板：直接粘进 .osu 的 [TimingPoints] 段 */
+  const handleCopyTiming = useCallback(async () => {
+      const text = buildTimingText();
+      if (!text) { alert(t('needAudio')); return; }
+      try {
+          await navigator.clipboard.writeText(text);
+          setCopied(true);
+          if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
+          copyTimerRef.current = window.setTimeout(() => setCopied(false), 1600);
+      } catch {
+          alert(t('copyFailed'));
+      }
+  }, [buildTimingText]);
+
+  /** 导入 timing（.osu 谱面 / 本软件导出的 timing txt / 旧版 JSON 配置都能读） */
+  const handleImportTiming = (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
+      e.target.value = ''; // 允许重复选同一个文件
       if (!file) return;
       const reader = new FileReader();
       reader.onload = (event) => {
           try {
-              const text = event.target?.result as string;
-              // 统一解析：支持软件 json / osu! 谱面 / Malody .mc / Arcaea .aff / 通用 txt
-              const cfg = parseTimingFile(text, file.name);
-              if (cfg && cfg.points.length > 0) {
-                  setGlobalOffset(cfg.offset);
-                  setRawPoints(cfg.points.map(p => ({
-                      id: crypto.randomUUID(),
-                      beatIndex: p.beatIndex,
-                      bpm: p.bpm,
-                      meter: typeof p.meter === 'number' && p.meter > 0 ? p.meter : 4, // ★ v0.8.17：读回拍号
-                      sv: p.sv !== false, // 默认开启绿线
-                      svRate: p.svRate && p.svRate > 0 ? p.svRate : 0,
-                      timeSec: typeof p.timeSec === 'number' && isFinite(p.timeSec) ? p.timeSec : undefined, // 红线绝对时间
-                  })));
-              } else {
-                  alert(t('invalidJson'));
-              }
+              const cfg = parseTimingFile(String(event.target?.result || ''), file.name);
+              if (cfg && cfg.points.length > 0) applyParsedConfig(cfg);
+              else alert(t('invalidJson'));
           } catch (err) {
               alert(t('parseJsonError'));
           }
       };
       reader.readAsText(file);
-      e.target.value = ''; // Reset input
   };
 
   // ===== 导出文件名与使用说明头 =====
@@ -746,13 +868,7 @@ function App() {
 
   // 各游戏导出文件顶部的替换说明（// 注释行，勿复制进谱面文件）
   const exportHowTo: Record<string, string[]> = {
-    exportOsu: [
-      '复制 [TimingPoints] 段（红线+绿线）替换 .osu 谱面中的对应段落；',
-      '[TimingPoints] 位于 [HitObjects] 之前；绿线为变速 SV（保持原速）。',
-    ],
     // ★ v0.8.15：原先还有一个「只导出 .mc（不含音频）」的选项，已按需求**删除** ——
-    //   那条路最容易踩"音频名与谱面文件夹里对不上 → Malody 里音乐只有几秒钟"的坑，
-    //   现在 Malody 只保留「谱面包（含音频）」一条出口。
     exportMalodyPack: [
       '产物是一个 .mcz 包（内含 .mc + 音频本体），直接拖进 Malody 即可导入；',
       '包内音频就是你导入本软件的那个文件，音质与原文件一致（压缩包里不重新编码）。',
@@ -791,9 +907,8 @@ function App() {
   // 基准 BPM 自动取第一个变速段落的 BPM（无需单独设置）
   const handleExportOsu = async () => {
       if (rawPoints.length === 0) { alert(t('needAudio')); return; }
-      const baseBpmForExport = rawPoints[0]?.bpm || 182;
-      const content = buildUsageHeader(songBase, t('exportOsu'), exportHowTo.exportOsu)
-          + generateOsuTimingPoints(globalOffset, rawPoints, baseBpmForExport);
+      // 纯 timing 行：没有注释头、没有 [TimingPoints] 标题 —— 打开后全选复制即可替换谱面对应段
+      const content = buildTimingText();
       const defaultName = `osu-${songBase}-timing.txt`;
       const electronAPI = (window as any).electronAPI;
       if (electronAPI?.saveFile) {
@@ -818,17 +933,8 @@ function App() {
   };
 
   // ===== 其他音游导出（新增功能，尚未充分测试：点击先提醒再导出）=====
-  // 每个条目：key=i18n菜单文案 / game=提醒用游戏名 / ext=保存过滤器 / name=默认文件名 / gen=生成函数
-  // plain=true 表示产物本身是**要被软件解析的文件**（JSON 类：malody .mc / phigros / adofai / vividstasis），
-  //   此时**绝不能**加 "// 使用说明" 注释头 —— 标准 JSON 不容忍注释，
-  //   实测把带注释头的导出文件直接改名喂给 mcz转osz.exe 会直接失败（不产出 .osu）。
-  //   说明改由导出后的弹窗给出（见 handleExportGame）。
-  //   Arcaea 的 .aff 是文本格式、支持注释，故保留注释头。
   const exportGameList = [
     // Malody：只保留「谱面包（含音频）」。把「导入音频的真实文件名」与「曲名(去扩展名)」传进去 ——
-    // 音频名会写进 meta.song.file 与末尾特殊音符的 sound；最后一项 audioData.duration
-    // 供生成末尾占位音符用（撑起谱面长度，否则 Malody 里谱面只有 1.3 秒）。
-    // ★ v0.8.15：原先还有个「只导出 .mc」的选项，已按需求删除（音频名对不上时 Malody 会静默退回 1 秒占位音源）。
     { key: 'exportMalodyPack', game: 'Malody 谱面包', ext: 'mcz', name: `malody-${songBase}.mcz`,            plain: true, gen: () => generateMalodyChart(globalOffset, rawPoints, songBase, '', 4, fileName || '', audioData?.duration || 0) },
     { key: 'exportArcaea',     game: 'Arcaea',       ext: 'txt', name: `arcaea-${songBase}-timing.txt`,      gen: () => generateArcaeaAff(globalOffset, rawPoints) },
     { key: 'exportPhigros',    game: 'Phigros',      ext: 'txt', name: `phigros-${songBase}-timing.txt`,     plain: true, gen: () => generatePhigrosChart(globalOffset, rawPoints) },
@@ -851,9 +957,6 @@ function App() {
           : '';
       if (electronAPI?.saveFile) {
           // ★ Malody 谱面包（.mcz）：走专门的打包通道 —— .mc 与音频一起塞进 zip。
-          //   必须这样做的原因：Malody 只会在"谱面文件夹里"按文件名找音频，
-          //   而我们在 .mc 里写的音频名（通常来自 osu! 谱面的 audio.mp3）跟目标文件夹里的
-          //   音频不同名 → 找不到音乐 → 编辑器里音乐只剩几秒。把音频一起打进包就没这个问题。
           if (item.key === 'exportMalodyPack') {
               if (!electronAPI.saveMalodyPackage) {
                   alert(t('malodyPackUnsupported'));
@@ -874,8 +977,6 @@ function App() {
               return;
           }
           // ★ v0.8.15：原先这里还有个「只导出 .mc」的专用通道（导出后询问是否把音频名对齐成
-          //   目标文件夹里的实际文件名）—— 随该选项一起删除。现在 Malody 只有「谱面包」一条路，
-          //   音频跟着一起打包，不再有"名字对不上"的可能。
           const filePath = await electronAPI.saveFile({
               defaultPath: item.name,
               filters: [{ name: 'Chart Files', extensions: [item.ext] }],
@@ -905,12 +1006,63 @@ function App() {
 
   /**
    * 从 t 秒起重新起一个 BufferSource（只换声源，不碰 isPlaying / 不重建播放循环）。
-   * ★ v0.8.21 新增，修「播放中点白条 → 播放头与时间码整段冻死」：
+   * ★ v0.8.19 新增，修「播放中点白条 → 播放头与时间码整段冻死」：
    *   旧 handleSeek 用的是 stop() + play()。两者在同一个事件里被 React 批处理成
    *   isPlaying: false → true（最终值仍是 true），于是播放循环的 effect 不会重建，
    *   而 stop() 已经把当前 rAF 取消了 → 声音还在放，播放头/时间码却再也不动。
    */
-  const startSourceAt = useCallback((t: number) => {
+  /**
+   * 读一次输出链路延迟（秒）：样本送进 AudioContext 到扬声器真正发声。
+   *
+   * ★ v0.8.19：两条独立口径互相校验 —— 这是 lazer 那套「一个时钟 + 串偏移」里最容易被忽略的一步。
+   *   · ts  = currentTime - getOutputTimestamp().contextTime
+   *            「正从扬声器出来的那一帧」对应的渲染时间差，MDN 语义即真实延迟，最准。
+   *   · nom = outputLatency + baseLatency
+   *            浏览器自己算的「设备缓冲 + 图延迟」，稳定但个别设备多报/少报。
+   *   两者本机吻合（62.6ms vs 62ms）。**差超过 40ms 说明 ts 是过时读数** ——
+   *   例如上一轮播放停在 30s、现在 currentTime 已在 60s 附近，差值看起来「合理」却完全错误，
+   *   会让画面多滞后几十毫秒，听起来就是「节拍器抢在播放头压线之前响」。此时只信 nom。
+   */
+  const readOutputLatencyOnce = useCallback((): number => {
+    const ctx = audioContext as AudioContext & { outputLatency?: number; baseLatency?: number };
+    let tsVal = 0;
+    try {
+      const ts = ctx.getOutputTimestamp?.();
+      if (ts && Number.isFinite(ts.contextTime) && ts.contextTime > 0) {
+        const d = ctx.currentTime - ts.contextTime;
+        if (Number.isFinite(d) && d > 0.004 && d < 0.25) tsVal = d;
+      }
+    } catch { /* 个别实现不支持则忽略 */ }
+    const hard = typeof ctx.outputLatency === 'number' && ctx.outputLatency > 0 ? ctx.outputLatency : 0;
+    const soft = typeof ctx.baseLatency === 'number' && ctx.baseLatency > 0 ? ctx.baseLatency : 0;
+    const nominal = hard > 0 ? hard + soft : soft;
+    if (tsVal > 0 && (nominal <= 0 || Math.abs(tsVal - nominal) < 0.04)) return tsVal;
+    if (nominal > 0) return nominal;
+    return tsVal;
+  }, [audioContext]);
+
+  /**
+   * 起播前采样取中位数：单次读数会因 render quantum 边界抖动，
+   * 中位数 + 上面的交叉校验能同时滤掉「过时 ts」与「瞬时毛刺」。
+   * 三次一致（极差 < 4ms）就提前结束，通常 3 次采样 ≈ 48ms，不拖慢起播。
+   */
+  const measureOutputLatency = useCallback(async (): Promise<number> => {
+    const samples: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      const v = readOutputLatencyOnce();
+      if (v > 0) samples.push(v);
+      if (samples.length >= 3) {
+        const mn = Math.min(...samples), mx = Math.max(...samples);
+        if (mx - mn < 0.004) break;
+      }
+      if (i < 5) await new Promise((r) => setTimeout(r, 24));
+    }
+    if (!samples.length) return 0;
+    samples.sort((a, b) => a - b);
+    return Math.min(samples[Math.floor(samples.length / 2)], 0.25);
+  }, [readOutputLatencyOnce]);
+
+  const startSourceAt = useCallback((t: number, lagOverride?: number) => {
     if (!audioData) return;
     if (sourceNodeRef.current) { try { sourceNodeRef.current.stop(); } catch(e) {} }
     const offset = Math.max(0, Math.min(audioData.duration, t));
@@ -918,21 +1070,85 @@ function App() {
     source.buffer = audioData.buffer;
     source.connect(masterGainRef.current || audioContext.destination);
     source.playbackRate.value = playbackRateRef.current; // 变速（原生变速，音调随倍速变化）
-    source.start(0, offset);
+    /**
+     * ★ v0.8.19：频谱不再随设置位移 —— 画面严格按音乐真实时间渲染（用户要求「不要动频谱」）。
+     *   这里的提前量**只剩输出链路延迟**：声音晚 L 秒才从扬声器出来，那就让内容提前 L 秒起播，
+     *   于是「现在听到的」= 「播放头指的位置」。
+     *
+     * ★ v0.8.19：延迟**由调用方传入**：起播时实测（measureOutputLatency 取中位数），
+     *   播放中 seek 复用同一个冻结值（latencyRef）。旧代码每帧重读，起播时读到 0（退回
+     *   baseLatency 10ms）、播放中读到 53ms，两处数字不同 → 节拍器提前 43ms 响。
+     */
+    const lag = lagOverride ?? latencyRef.current;
+    latencyRef.current = lag;
+    const leadSec = lag * playbackRateRef.current;
+    const bufferOffset = Math.max(0, Math.min(audioData.duration - 0.001, offset + leadSec));
+    source.start(0, bufferOffset);
     sourceNodeRef.current = source;
     startTimeRef.current = audioContext.currentTime;
-    startOffsetRef.current = offset;
+    bufferStartRef.current = bufferOffset;
     playheadRef.current = offset; // 播放头立即跳到新位置
     lastScheduledIndexRef.current = -Infinity; // 新位置：下一帧从当地拍子重新调度节拍器
   }, [audioData, audioContext]);
 
+  /**
+   * 最终生效的输出延迟 = 自动实测 + 用户「同步微调」。
+   * 两者分工：自动值解决设备上报；微调解决上报不准（蓝牙 / 虚拟声卡）—— 这就是 lazer 的
+   * platformOffsetClock + userGlobalOffsetClock，一个是测量值，一个是用户校准值。
+   */
+  const resolveLatency = useCallback(async (): Promise<number> => {
+    const auto = await measureOutputLatency();
+    const adj = Number.isFinite(settings.syncAdjustMs) ? settings.syncAdjustMs / 1000 : 0;
+    return Math.max(0, Math.min(0.3, auto + adj));
+  }, [measureOutputLatency, settings.syncAdjustMs]);
+
+  /** getOutputTimestamp 是否已经给出有效读数（输出流真正跑起来之前 contextTime 为 0） */
+  const hasValidOutputClock = useCallback((): boolean => {
+    try {
+      const ts = audioContext.getOutputTimestamp?.();
+      return !!ts && Number.isFinite(ts.contextTime) && ts.contextTime > 0;
+    } catch { return false; }
+  }, [audioContext]);
+
   const play = useCallback(async () => {
     if (!audioData) return;
-    if (audioContext.state === 'suspended') await audioContext.resume();
-    startSourceAt(currentTimeRef.current);
+    const cold = audioContext.state !== 'running';
+    if (cold) {
+      await audioContext.resume();
+      /**
+       * ★ v0.8.19：冷启动时先等输出流真正跑起来再起播（最多 200ms）。
+       *   否则 readOutputLatency 拿到的是无效值 → 退回 baseLatency(10ms)，
+       *   整段播放的画面会比声音早约 50ms（声音迟迟不到位）。
+       *   注意：这只影响**画面**，节拍器与音乐的同步走渲染时钟，不依赖这个值。
+       */
+      const t0 = performance.now();
+      while (!hasValidOutputClock() && performance.now() - t0 < 200) {
+        await new Promise((r) => setTimeout(r, 16));
+      }
+    }
+    // ★ v0.8.19：起播前实测一次输出延迟并冻结（多口径交叉校验，避免过时读数把画面推偏）
+    const lag = await resolveLatency();
+    setOutputLatencyMs(Math.round(lag * 1000));
+    startSourceAt(currentTimeRef.current, lag);
     uiFrameRef.current = 0;
     setIsPlaying(true);
-  }, [audioData, audioContext, startSourceAt]);
+  }, [audioData, audioContext, hasValidOutputClock, resolveLatency, startSourceAt]);
+
+  /**
+   * 播放中改「同步微调」→ 防抖 350ms 后重新测量并重锚起播点。
+   * 校准要能当场听出来，所以不能等下次播放；但拖滑条每一步都重起 BufferSource 会把声音打碎，
+   * 因此防抖。注意依赖故意只留 syncAdjustMs：isPlaying / startSourceAt 取闭包当前值。
+   */
+  useEffect(() => {
+    if (!isPlaying) return;
+    const id = window.setTimeout(async () => {
+      const lag = await resolveLatency();
+      setOutputLatencyMs(Math.round(lag * 1000));
+      startSourceAt(currentTimeRef.current, lag);
+    }, 350);
+    return () => window.clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.syncAdjustMs]);
 
   const togglePlay = useCallback(() => isPlaying ? stop() : play(), [isPlaying, play, stop]);
 
@@ -959,8 +1175,15 @@ function App() {
     const rate = () => playbackRateRef.current;
     const loop = () => {
         const currentAudioTime = audioContext.currentTime;
-        // 墙钟公式：内容时间 = 起始偏移 + 墙钟流逝 × 倍速（60fps 每帧平滑推进，与音频位置严格一致）
-        const newTime = startOffsetRef.current + (currentAudioTime - startTimeRef.current) * rate();
+        /**
+         * ★ v0.8.19：时钟分两层（同 osu!lazer 的思路：一个时钟 + 一串偏移，绝不让各画各的）
+         *   contentNow = 此刻**送进渲染图**的内容位置
+         *   newTime    = 此刻**从扬声器出来**的内容位置 = contentNow - 输出延迟×倍速
+         *   画面（频谱 / 波形 / 红线 / 播放头 / 时间码）统一用 newTime → 「看见的 = 听见的」。
+         *   节拍器走渲染时钟换算（见下方 scheduleTime），与音乐同一条路，天然零误差。
+         */
+        const contentNow = bufferStartRef.current + (currentAudioTime - startTimeRef.current) * rate();
+        const newTime = Math.max(0, contentNow - latencyRef.current * rate());
         if (newTime >= (audioData?.duration || 0)) {
             currentTimeRef.current = audioData?.duration || 0;
             playheadRef.current = audioData?.duration || 0;
@@ -969,7 +1192,7 @@ function App() {
         else {
             currentTimeRef.current = newTime;
             playheadRef.current = newTime; // 播放头独立层每帧实时读取（不经过 React）
-            // ★ v0.8.21：白条滑出当前区域 → 视口**一帧直接跳到**下一区域（不做滚动动画，与侧栏切段一致）
+            // ★ v0.8.19：白条滑出当前区域 → 视口**一帧直接跳到**下一区域（不做滚动动画，与侧栏切段一致）
             if (followRef.current) {
                 const w = containerWidthRef.current;
                 if (w > 0) {
@@ -984,8 +1207,6 @@ function App() {
                 }
             }
             // 时间码 / 总览条等 UI 显示降频到 ~10fps：按「时间」而不是「帧数」计。
-            // 按帧数计的话，120Hz 屏上同一个 6 帧阈值会变成 20 次/秒，
-            // 等于白白让整棵组件树重渲染 20 次（低配机上这部分全是浪费）。
             uiFrameRef.current++;
             const nowMs = performance.now();
             if (nowMs - lastUiPublishRef.current >= 100) {
@@ -993,10 +1214,10 @@ function App() {
                 setCurrentTime(newTime);
             }
             if (isMetronomeOn) {
-                // 红线节拍线延迟（秒）：节拍器声音与拍线/红线显示位置统一（正=随拍线后移，负=提前）
-                const beatDelaySec = settings.beatLineDelayMs / 1000;
-                // 前瞻需额外覆盖负延迟的提前量（拍线提前时声音要更早调度），基础 0.1s
-                const lookahead = 0.1 + Math.max(0, -beatDelaySec) + 0.05;
+                // ★ v0.8.19：节拍器打在「红线画出来的位置」= 谱面拍时间 + beatLineDelaySec。
+                //   第一条红线之前没有线可压 → 不响（原来会按 BPM 往时间轴左侧外推，前奏里空响）。
+                const firstLineTime = timingPoints.length ? timingPoints[0].time : 0;
+                const lookahead = 0.15;
                 // 墙钟前瞻对应的内容时间 = 前瞻 × 倍速（音乐以倍速播放）
                 const horizonTime = newTime + lookahead * rate();
                 let nextBeatIndex = lastScheduledIndexRef.current + 1;
@@ -1006,12 +1227,22 @@ function App() {
                 let iters = 0;
                 while (iters < 120) { // 上限放宽：红线/蓝线位置接近时也不会漏掉该拍的节拍器声音
                    const beatTime = getTimeAtBeatIndex(nextBeatIndex, timingPoints);
-                   // 拍线显示时间 = 原始拍时间 + 节拍线延迟（声音打在显示的拍线/红线上，与画面统一）
-                   const beatDisplayTime = beatTime + beatDelaySec;
-                   if (beatDisplayTime > horizonTime) break;
-                   // 节拍声调度墙钟 = 起始墙钟 + (显示拍时间 - 起始内容时间) / 倍速（与音频位置严格同步）
-                   const scheduleTime = startTimeRef.current + (beatDisplayTime - startOffsetRef.current) / rate();
-                   if (scheduleTime >= currentAudioTime - 0.05) {
+                   if (beatTime > horizonTime) break;
+                   /**
+                    * ★ v0.8.19：节拍器打在**红线画出来的位置**上（beatTime + 刻度延迟），
+                    *   而不是谱面里的原始拍时间。这样「播放头压到红线」与「听到咔哒」是同一瞬间；
+                    *   再减掉输出链路延迟，让声音从扬声器出来的时刻正好落在播放头压线那一刻。
+                    */
+                   const shiftSec = Number.isFinite(settings.beatLineDelayMs) ? settings.beatLineDelayMs / 1000 : 0;
+                   const clickTime = beatTime + shiftSec;
+                   /**
+                    * ★ v0.8.19：只用**渲染时钟**换算，不再减 readOutputLatency()。
+                    *   咔哒声和音乐是从同一个渲染图出去的 —— 只要两者在「渲染时刻」对齐，到扬声器就一定对齐。
+                    *   旧写法每帧重读延迟：起播时 0（退回 baseLatency 10ms）、播放中 53ms，
+                    *   两处数字不同 → 节拍器整整提前 43ms 响（这就是「节拍器提前响」）。
+                    */
+                   const scheduleTime = startTimeRef.current + (clickTime - bufferStartRef.current) / rate();
+                   if (scheduleTime >= currentAudioTime - 0.05 && beatTime >= firstLineTime) {
                        // 重拍音（红线）= 段起点：每条红线自带 BPM，重拍只落在红线上
                        // 红线之间距离很近时（<几毫秒）两次点击都会照常调度 → 声音不会被丢弃
                        const { point: beatPointObj } = getPointAtTime(beatTime, timingPoints);
@@ -1032,7 +1263,7 @@ function App() {
 
   /**
    * 跳转到 t 秒。
-   * ★ v0.8.21 修 bug：**播放中点击频谱 / 白条 / 总览条 → 停在该位置**（原来会"无缝续播"，
+   * ★ v0.8.19 修 bug：**播放中点击频谱 / 白条 / 总览条 → 停在该位置**（原来会"无缝续播"，
    *   而 stop()+play() 被批处理掉之后播放头反而冻死）。
    *   段间跳转（Alt+←→、侧栏卡片）传 keepPlaying，仍按"跳过去继续放"处理。
    */
@@ -1042,7 +1273,7 @@ function App() {
     playheadRef.current = t;
     setCurrentTime(t);
     if (sourceNodeRef.current) {
-      if (opts?.keepPlaying) startSourceAt(t); // 换声源，播放循环不重建（播放头继续跟手）
+      if (opts?.keepPlaying) startSourceAt(t, latencyRef.current); // 换声源，复用冻结延迟（重读会让画面跳一下）
       else stop();                            // 停下，就停在点击的位置
     }
     // 频谱视图：目标位置在视口外时把视口翻过去（播放头落在左侧 10%，与自动跟随一致）
@@ -1056,8 +1287,20 @@ function App() {
     });
   }, [audioData, containerWidth, stop, startSourceAt]);
 
+  /** 双击变速段落卡片 → 播放头 / 时间码 / 总览条一起跳到该卡片的 timing 位置 */
+  const handleJumpToTimeline = useCallback((sec: number) => {
+      handleSeek(sec, { keepPlaying: true });
+  }, [handleSeek]);
+
+  /** 左下角输入秒数 → 跳转（回车/失焦生效） */
+  const commitTimeSeek = useCallback(() => {
+      const v = parseFloat(timeText);
+      if (!isFinite(v)) { setTimeText(currentTimeRef.current.toFixed(3)); return; }
+      handleSeek(Math.max(0, v));
+  }, [timeText, handleSeek]);
+
   /**
-   * ★ v0.8.20：用户主动移动视口（拖拽平移 / 滚轮滚动）时关闭自动跟随。
+   * ★ v0.8.19：用户主动移动视口（拖拽平移 / 滚轮滚动）时关闭自动跟随。
    *   否则播放中想把视口拖到别处看一下，下一帧就被跟随逻辑拽回播放头。
    *   需要恢复跟随点底部按钮即可。
    */
@@ -1069,14 +1312,16 @@ function App() {
   // 调整播放倍速（0.25x - 2.0x）：原生 playbackRate 实时变速（变调），不打断播放
   const handleRateChange = useCallback((rate: number) => {
       const clamped = Math.max(0.25, Math.min(2.0, rate));
-      if (Math.abs(clamped - playbackRateRef.current) < 0.001) return; // 无变化直接返回
+      const prev = playbackRateRef.current;
+      if (Math.abs(clamped - prev) < 0.001) return; // 无变化直接返回
       playbackRateRef.current = clamped;
       setPlaybackRate(clamped);
       if (sourceNodeRef.current) {
           // BUG 修复：倍数变了必须用「当前内容时间」重新锚定墙钟起点。
           // 否则 RAF 里 newTime = startOffset + 已流逝墙钟 × 新倍速 会把之前那段按新倍速重算 → 播放头瞬移。
+          // ★ v0.8.19：按**旧倍速**把此刻的渲染位置固化下来当新锚点（delay 沿用本次冻结值）。
           const now = audioContext.currentTime;
-          startOffsetRef.current = currentTimeRef.current;
+          bufferStartRef.current = bufferStartRef.current + (now - startTimeRef.current) * prev;
           startTimeRef.current = now;
           sourceNodeRef.current.playbackRate.value = clamped; // 实时生效
           lastScheduledIndexRef.current = -Infinity; // 重置节拍调度，下一帧从当前拍重新调度
@@ -1084,9 +1329,6 @@ function App() {
   }, [audioContext]);
 
   // ===== 常用快捷键（不做界面标注，帮助面板里只列了 Space / 缩放 / 段落切换）=====
-  //  Ctrl+Z 撤销 / Ctrl+Shift+Z · Ctrl+Y 重做 / Space 播放暂停 /
-  //  ← → 快退快进 1s（Shift 5s）/ + - 缩放 / Ctrl+O 打开音频 / Ctrl+S 导出 JSON
-  //  ★ v0.8.16 新增：Alt+← → 上/下一段 / Alt+滚轮 精细调 px/s（滚轮相关见 Visualizer 容器 onWheel）
   const zoomBy = useCallback((factor: number) => {
       setViewState(s => ({ ...s, zoom: Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, s.zoom * factor)) }));
   }, []);
@@ -1125,11 +1367,12 @@ function App() {
       const next = Math.max(0, Math.min(timingPoints.length - 1, idx + dir));
       const target = timingPoints[next];
       if (!target) return;
-      handleSeek(target.time, { keepPlaying: true }); // 段间导航：播放中切段继续放，不打断试听
+      const targetT = target.time;
+      handleSeek(targetT, { keepPlaying: true }); // 段间导航：播放中切段继续放，不打断试听
       // 视图居中（与 handleSeek 里"超出视区才居中"不同：这里是**明确要求**跳段，所以无条件居中）
       setViewState(v => {
           const maxScroll = Math.max(0, (audioData?.duration || 0) * v.zoom - containerWidth);
-          return { ...v, scrollLeft: Math.max(0, Math.min(target.time * v.zoom - containerWidth / 2, maxScroll)) };
+          return { ...v, scrollLeft: Math.max(0, Math.min(targetT * v.zoom - containerWidth / 2, maxScroll)) };
       });
       handleSectionClick(target.id); // 右侧面板滚到对应卡片并闪一下高亮
   }, [timingPoints, handleSeek, audioData, containerWidth, handleSectionClick]);
@@ -1159,8 +1402,8 @@ function App() {
           if (typing) return; // 其余快捷键在输入框内不生效
 
           if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
-          if (ctrl && key === 'o') { e.preventDefault(); handleFileUpload(null); return; }
-          if (ctrl && key === 's') { e.preventDefault(); handleExportJson(); return; }
+          if (ctrl && key === 'o') { e.preventDefault(); handleImportClick(); return; }
+          if (ctrl && key === 's') { e.preventDefault(); handleExportOsu(); return; }
           // ★ v0.8.16：Alt+← / Alt+→ 切上/下一段（必须排在普通 ←→ 之前，
           //   否则会被"快退快进 1s"先吃掉 —— 两者 e.code 相同，只差 altKey）
           if (e.altKey && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) {
@@ -1179,7 +1422,7 @@ function App() {
       };
       window.addEventListener('keydown', handleKeyDown);
       return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [togglePlay, undo, redo, handleFileUpload, handleExportJson, handleSeek, zoomBy, stepSection]);
+  }, [togglePlay, undo, redo, handleImportClick, handleExportOsu, handleSeek, zoomBy, stepSection]);
 
   /**
    * ★ v0.8.19：变速段落卡片列表必须缓存。
@@ -1224,35 +1467,64 @@ function App() {
       }),
     } as React.CSSProperties}>
       <div className="flex-1 flex flex-col min-w-0 h-full relative z-10">
-        <header className="h-16 bg-[var(--panel)] border-b border-[var(--line)] flex items-center justify-between px-6 z-30 shrink-0 shadow-2xl">
-            <div className="flex items-center gap-6">
-                {/* 左上角：导入音频（原「♪ BPM 测速助手」标题已按需求删除，导入按钮上移到这个位置） */}
-                <label
-                    className={`flex items-center gap-2 px-4 py-2 bg-[var(--accent)] rounded-lg transition text-sm font-black uppercase tracking-widest shadow-lg ${importing ? 'opacity-70 cursor-wait' : 'cursor-pointer active:scale-95'}`}
-                    title={importing ? t('decoding') : t('importAudio')}
-                >
-                    {importing
-                        ? <span className="inline-block w-[18px] h-[18px] rounded-full border-2 border-white/30 border-t-white animate-spin" />
-                        : <Upload size={18} />}
-                    <span>{importing ? t('decoding') : t('importAudio')}</span>
-                    <input type="file" accept="audio/*" onChange={handleFileUpload} className="hidden" disabled={importing} />
-                </label>
-                {/* 紧邻导入音频：启动制谱侧栏（原来在设置面板里，按需求移到顶栏黄圈位置） */}
+        <header className="h-16 bg-[var(--panel)] border-b border-[var(--line)] flex items-center justify-between gap-3 px-4 z-30 shrink-0 shadow-2xl">
+            <div className="flex items-center gap-2.5 min-w-0 flex-nowrap">
+                {/* 导入：音频 / .osu / .osz 一起选；右侧小箭头可只选「谱面文件夹」。
+                    v0.8.19：按钮改成定高 nowrap 的一体式控件，顶栏永远只占 64px，不会压到下面的播放/频谱区 */}
+                <div className="relative flex items-stretch shrink-0">
+                    <button
+                        onClick={() => { setImportMenuOpen(false); void handleImportClick(); }}
+                        disabled={importing}
+                        title={t('importFileMenu')}
+                        className={`flex items-center gap-2 px-3.5 h-10 bg-[var(--accent)] text-white rounded-l-lg transition text-sm font-black uppercase tracking-widest shadow-lg whitespace-nowrap ${importing ? 'opacity-70 cursor-wait' : 'active:scale-95'}`}
+                    >
+                        {importing
+                            ? <span className="inline-block w-[18px] h-[18px] rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                            : <Upload size={18} />}
+                        <span>{importing ? t('decoding') : t('importAudio')}</span>
+                    </button>
+                    <button
+                        onClick={() => setImportMenuOpen(v => !v)}
+                        title={t('importFolder')}
+                        className="px-1.5 h-10 bg-[var(--accent)] text-white rounded-r-lg border-l border-white/25 transition active:scale-95"
+                    >
+                        <ChevronDown size={14} className={`transition-transform ${importMenuOpen ? 'rotate-180' : ''}`} />
+                    </button>
+                    {importMenuOpen && (
+                        <div className="absolute left-0 top-full mt-1.5 w-56 rounded-xl bg-[var(--panel)] border border-[var(--line2)] shadow-2xl z-50 overflow-hidden">
+                            <button
+                                onClick={() => { setImportMenuOpen(false); void handleImportClick(); }}
+                                className="w-full flex items-center gap-2 px-3.5 py-2.5 text-xs font-bold text-[var(--t2)] hover:bg-[var(--chip2)] transition-colors"
+                            >
+                                <Upload size={14} /> {t('importFileMenu')}
+                            </button>
+                            <button
+                                onClick={() => { setImportMenuOpen(false); void handleImportFolder(); }}
+                                className="w-full flex items-center gap-2 px-3.5 py-2.5 text-xs font-bold text-[var(--t2)] hover:bg-[var(--chip2)] transition-colors border-t border-[var(--line)]"
+                            >
+                                <FolderOpen size={14} /> {t('importFolder')}
+                            </button>
+                        </div>
+                    )}
+                </div>
+                {/* 浏览器兜底（Electron 下不会用到） */}
+                <input id="audio-file-input" type="file" accept="audio/*" onChange={handleFileUpload} className="hidden" disabled={importing} />
+                {/* 紧邻导入：启动制谱侧栏 */}
                 <button
                     onClick={launchSidebar}
                     disabled={mhState === 'launching'}
                     title={mhMsg || '启动 osu! 制谱侧栏（启动后本软件会自动收起；在侧栏点「返回测速」即可回到软件并关闭侧栏）'}
-                    className="flex items-center gap-2 px-4 py-2 bg-[var(--chip2)] hover:bg-[var(--chip)] border border-[var(--accent)]/40 text-[var(--accent)] rounded-lg cursor-pointer transition text-sm font-black uppercase tracking-widest shadow-lg active:scale-95 disabled:opacity-50"
+                    className="flex items-center gap-2 px-3.5 h-10 bg-[var(--chip2)] hover:bg-[var(--chip)] border border-[var(--accent)]/40 text-[var(--accent)] rounded-lg cursor-pointer transition text-sm font-black uppercase tracking-widest shadow-lg active:scale-95 disabled:opacity-50 whitespace-nowrap shrink-0"
                 >
                     <PanelRightOpen size={18} />
                     <span>{mhState === 'launching' ? t('launching') : t('mapHelper')}</span>
                 </button>
-                {fileName && <span className="text-xs text-[var(--t4)] truncate max-w-[200px] font-mono bg-[var(--chip2)] px-3 py-1 rounded-full border border-[var(--line2)]">{fileName}</span>}
-                {mhState === 'error' && <span className="text-xs text-red-400 max-w-[220px] truncate">{mhMsg}</span>}
+                {fileName && <span className="hidden xl:inline text-xs text-[var(--t4)] truncate max-w-[170px] font-mono bg-[var(--chip2)] px-3 py-1 rounded-full border border-[var(--line2)]">{fileName}</span>}
+                {mhState === 'error' && <span className="text-xs text-red-400 max-w-[200px] truncate hidden lg:inline">{mhMsg}</span>}
             </div>
-            <div className="flex items-center gap-4">
-                {/* 音乐音量 + 节拍器音量滑条（设置按钮右侧空位） */}
-                <div className="flex items-center gap-2.5 bg-[var(--chip2)] px-3 py-1.5 rounded-xl border border-[var(--line)]" title={t('musicVolume')}>
+            <div className="flex items-center gap-2.5 shrink-0">
+                {/* 音乐音量 + 节拍器音量滑条：窄窗口下隐藏，保证右侧按钮不被挤进播放区 */}
+                <div className="hidden xl:flex items-center gap-2.5 bg-[var(--chip2)] px-3 py-1.5 rounded-xl border border-[var(--line)]" title={t('musicVolume')}>
                     <Music size={14} className="text-[var(--accent)] shrink-0" />
                     <input
                         type="range" min="0" max="1" step="0.05"
@@ -1262,7 +1534,7 @@ function App() {
                     />
                     <span className="text-[10px] font-mono text-[var(--t3)] w-8 text-right shrink-0">{Math.round(settings.musicVolume * 100)}%</span>
                 </div>
-                <div className="flex items-center gap-2.5 bg-[var(--chip2)] px-3 py-1.5 rounded-xl border border-[var(--line)]" title={t('metronomeVolume')}>
+                <div className="hidden xl:flex items-center gap-2.5 bg-[var(--chip2)] px-3 py-1.5 rounded-xl border border-[var(--line)]" title={t('metronomeVolume')}>
                     <Volume2 size={14} className="text-[var(--accent2)] shrink-0" />
                     <input
                         type="range" min="0" max="1" step="0.05"
@@ -1286,7 +1558,7 @@ function App() {
                 >
                     <HelpCircle size={24} />
                 </button>
-                <span className="text-2xl font-mono font-black text-[var(--accent)] bg-black/40 px-4 py-1 rounded-lg border border-[var(--accent)]/20">{currentTime.toFixed(3)}s</span>
+                {/* 时间码已移到左下角（当前 BPM 左侧，可直接输入跳转） */}
                 <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="text-[var(--t3)] hover:text-white transition p-2 hover:bg-[var(--chip2)] rounded-lg">
                     {isSidebarOpen ? <PanelRightClose size={24} /> : <PanelRightOpen size={24} />}
                 </button>
@@ -1300,11 +1572,22 @@ function App() {
                         const rect = containerRef.current?.getBoundingClientRect();
                         if (!rect) return;
                         const mouseX = e.clientX - rect.left;
+                        // ★ v0.8.19 触控板双指捏合：Chromium 把 pinch 报成 ctrl + wheel。
+                        //   以光标位置为锚点缩放；两指左右滑动仍是普通 wheel，走下面的平移分支（行为不变）。
+                        if (e.ctrlKey) {
+                            if (e.cancelable) e.preventDefault();
+                            const zoomFactor = Math.exp(-e.deltaY * 0.012);
+                            setViewState(prev => {
+                                const timeAtMouse = (mouseX + prev.scrollLeft) / prev.zoom;
+                                const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, prev.zoom * zoomFactor));
+                                const newScrollLeft = timeAtMouse * newZoom - mouseX;
+                                const maxScroll = Math.max(0, audioData.duration * newZoom - containerWidth);
+                                return { zoom: newZoom, scrollLeft: Math.max(0, Math.min(newScrollLeft, maxScroll)) };
+                            });
+                            return;
+                        }
                         if (e.altKey) {
                             // ★ v0.8.16：Alt+滚轮 = **精细**调整频谱的 px/s（缩放）。
-                            //   与 Shift+滚轮（粗调，每格 ×1.1 / ×0.9）分开：精细档每格只动 3%，
-                            //   用来在"看清某一拍"和"看全整段"之间微调，不会一下跳太远。
-                            //   同样以鼠标位置为锚点，光标下那个时间点保持不动。
                             const zoomFactor = e.deltaY < 0 ? 1.03 : 1 / 1.03;
                             setViewState(prev => {
                                 const timeAtMouse = (mouseX + prev.scrollLeft) / prev.zoom;
@@ -1352,7 +1635,7 @@ function App() {
                             renderDpr={renderDpr}
                             specFFTSize={settings.specFFTSize}
                             specSensitivity={settings.specSensitivity}
-                            beatLineDelaySec={settings.beatLineDelayMs / 1000}
+                            beatLineDelaySec={Number.isFinite(settings.beatLineDelayMs) ? settings.beatLineDelayMs / 1000 : 0}
                         />
                     )}
                 </div>
@@ -1459,21 +1742,41 @@ function App() {
                 </div>
             </div>
             {/* 底部：控制按钮行 */}
-            <div className="flex-1 flex justify-center items-center gap-6 min-h-0">
+            <div className="flex-1 flex justify-start xl:justify-center items-center gap-3 min-h-0 px-4 overflow-x-auto custom-scrollbar">
+            {/* 播放位置：时间码 + 可直接输入秒数跳转（原顶栏右上角的时间窗口移到这里） */}
+            <div className="flex items-center gap-1.5 h-11 bg-[var(--chip2)] px-3 rounded-xl border border-[var(--line)] shrink-0" title={t('timeSeekHint')}>
+                <Clock size={14} className="text-[var(--accent)] shrink-0" />
+                <input
+                    value={timeText}
+                    inputMode="decimal"
+                    onFocus={(e) => { timeFocusRef.current = true; e.currentTarget.select(); }}
+                    onChange={(e) => setTimeText(e.target.value.replace(/[^\d.]/g, ''))}
+                    onBlur={() => { timeFocusRef.current = false; commitTimeSeek(); }}
+                    onKeyDown={(e) => {
+                        e.stopPropagation();
+                        if (e.key === 'Enter') { e.preventDefault(); commitTimeSeek(); (e.target as HTMLInputElement).blur(); }
+                        else if (e.key === 'Escape') { e.preventDefault(); setTimeText(currentTimeRef.current.toFixed(3)); (e.target as HTMLInputElement).blur(); }
+                    }}
+                    className="w-16 text-center bg-transparent border-b border-transparent hover:border-[var(--line2)] focus:border-[var(--accent)] outline-none text-base font-mono font-black text-[var(--accent)] tabular-nums cursor-text"
+                />
+            </div>
             {/* 当前 BPM（当前播放位置所在段落） */}
-            <div className="flex items-center gap-2.5 bg-[var(--chip2)] px-4 py-2 rounded-xl border border-[var(--line)] shrink-0" title={t('currentBpmHint')}>
+            <div className="flex items-center gap-2.5 h-11 bg-[var(--chip2)] px-4 rounded-xl border border-[var(--line)] shrink-0" title={t('currentBpmHint')}>
                 <span className="text-[10px] text-[var(--t3)] uppercase font-black tracking-widest">{t('currentBpm')}</span>
                 <span className="text-lg font-mono font-black text-[var(--accent2)] tabular-nums leading-none">{currentBpm.toFixed(2)}</span>
             </div>
-            <button onClick={stop} className="text-red-500/70 hover:text-red-500 transition-all hover:scale-110 active:scale-90" title={t('stop')}><Square size={28} fill="currentColor"/></button>
-            <button onClick={togglePlay} className="p-5 rounded-full bg-[var(--accent)] hover:bg-[var(--accent)] text-white shadow-[0_0_20px_rgba(79,70,229,0.4)] active:scale-90 transition-all">
-                {isPlaying ? <Pause size={32} fill="currentColor"/> : <Play size={32} fill="currentColor" className="ml-1"/>}
-            </button>
-            <button onClick={() => setIsMetronomeOn(p => !p)} className={`transition-all hover:scale-110 active:scale-90 ${isMetronomeOn ? 'text-green-400 drop-shadow-[0_0_8px_rgba(74,222,128,0.4)]' : 'text-[var(--t4)]'}`} title={t('metronome')}>
-                {isMetronomeOn ? <Volume2 size={32}/> : <VolumeX size={32}/>}
-            </button>
+            {/* 播放控制组：停止 / 播放 / 节拍器 */}
+            <div className="flex items-center gap-2 px-1 shrink-0">
+                <button onClick={stop} className="text-red-500/70 hover:text-red-500 transition-all hover:scale-110 active:scale-90" title={t('stop')}><Square size={24} fill="currentColor"/></button>
+                <button onClick={togglePlay} className="w-14 h-14 rounded-full flex items-center justify-center bg-[var(--accent)] hover:bg-[var(--accent)] text-white shadow-[0_0_20px_rgba(79,70,229,0.4)] active:scale-90 transition-all">
+                    {isPlaying ? <Pause size={30} fill="currentColor"/> : <Play size={30} fill="currentColor" className="ml-1"/>}
+                </button>
+                <button onClick={() => setIsMetronomeOn(p => !p)} className={`transition-all hover:scale-110 active:scale-90 ${isMetronomeOn ? 'text-green-400 drop-shadow-[0_0_8px_rgba(74,222,128,0.4)]' : 'text-[var(--t4)]'}`} title={t('metronome')}>
+                    {isMetronomeOn ? <Volume2 size={28}/> : <VolumeX size={28}/>}
+                </button>
+            </div>
             {/* 变速控件：滑块 + 点击数值复位 1.0x */}
-            <div className="flex items-center gap-3 bg-[var(--chip2)] px-4 py-1.5 rounded-2xl border border-[var(--line)]" title={t('rateTitle')}>
+            <div className="flex items-center gap-2.5 h-11 bg-[var(--chip2)] px-3.5 rounded-xl border border-[var(--line)] shrink-0" title={t('rateTitle')}>
                 <Gauge size={18} className="text-[var(--accent2)] shrink-0" />
                 <input 
                     type="range" min="0.25" max="2" step="0.05"
@@ -1489,9 +1792,21 @@ function App() {
                     {playbackRate.toFixed(2)}x
                 </button>
             </div>
-            <div className="flex items-center gap-3 bg-[var(--chip2)] px-4 py-1.5 rounded-2xl border border-[var(--line)]">
-                <button onClick={() => zoomBy(0.8)} className="text-[var(--t4)] hover:text-white transition-colors" title={t('zoomOut')}><ZoomOut size={22}/></button>
-                {/* 缩放倍率：可直接键入 px/s，回车/失焦生效，↑↓ 以 1.2 倍步进，Esc 撤销 */}
+            {/* 视口自动跟随播放头：紧邻变速滑条 */}
+            <button
+                onClick={() => setFollowPlayhead(f => !f)}
+                className={`w-11 h-11 shrink-0 flex items-center justify-center rounded-xl border transition-all hover:scale-105 active:scale-95 ${
+                    followPlayhead
+                        ? 'bg-[var(--accent)]/15 border-[var(--accent)]/50 text-[var(--accent2)] shadow-[0_0_12px_rgba(79,70,229,0.25)]'
+                        : 'bg-[var(--chip2)] border-[var(--line)] text-[var(--t4)] hover:text-white'
+                }`}
+                title={`${t('followPlayhead')}${followPlayhead ? ' · ON' : ' · OFF'} — ${t('followPlayheadHint')}`}
+            >
+                <LocateFixed size={20} />
+            </button>
+            {/* 缩放倍率：可直接键入 px/s，回车/失焦生效，↑↓ 以 1.2 倍步进，Esc 撤销 */}
+            <div className="flex items-center gap-2 h-11 bg-[var(--chip2)] px-3.5 rounded-xl border border-[var(--line)] shrink-0">
+                <button onClick={() => zoomBy(0.8)} className="text-[var(--t4)] hover:text-white transition-colors" title={t('zoomOut')}><ZoomOut size={20}/></button>
                 <div className="flex items-baseline gap-0.5" title={`${t('zoomScale')}：${MIN_ZOOM}~${MAX_ZOOM} px/s（可直接输入，回车生效，↑↓ 微调）`}>
                     <input
                         value={zoomText}
@@ -1506,24 +1821,12 @@ function App() {
                             else if (e.key === 'ArrowUp') { e.preventDefault(); applyZoomValue((parseFloat(zoomText) || viewState.zoom) * 1.2); }
                             else if (e.key === 'ArrowDown') { e.preventDefault(); applyZoomValue((parseFloat(zoomText) || viewState.zoom) / 1.2); }
                         }}
-                        className="w-14 text-center bg-transparent border-b border-transparent hover:border-[var(--line2)] focus:border-[var(--accent)] outline-none text-sm font-mono font-bold text-[var(--t1)] tabular-nums cursor-text"
+                        className="w-12 text-center bg-transparent border-b border-transparent hover:border-[var(--line2)] focus:border-[var(--accent)] outline-none text-sm font-mono font-bold text-[var(--t1)] tabular-nums cursor-text"
                     />
                     <span className="text-[10px] text-[var(--t4)] font-mono select-none">px/s</span>
                 </div>
-                <button onClick={() => zoomBy(1.2)} className="text-[var(--t4)] hover:text-white transition-colors" title={t('zoomIn')}><ZoomIn size={22}/></button>
+                <button onClick={() => zoomBy(1.2)} className="text-[var(--t4)] hover:text-white transition-colors" title={t('zoomIn')}><ZoomIn size={20}/></button>
             </div>
-            {/* ★ v0.8.20 视口自动跟随播放头：白条滑出当前区域后自动跳到下一区域；手动拖动视口会自动关闭 */}
-            <button
-                onClick={() => setFollowPlayhead(f => !f)}
-                className={`p-2.5 rounded-xl border transition-all hover:scale-105 active:scale-95 ${
-                    followPlayhead
-                        ? 'bg-[var(--accent)]/15 border-[var(--accent)]/50 text-[var(--accent2)] shadow-[0_0_12px_rgba(79,70,229,0.25)]'
-                        : 'bg-[var(--chip2)] border-[var(--line)] text-[var(--t4)] hover:text-white'
-                }`}
-                title={`${t('followPlayhead')}${followPlayhead ? ' · ON' : ' · OFF'} — ${t('followPlayheadHint')}`}
-            >
-                <LocateFixed size={20} />
-            </button>
             </div>
         </footer>
       </div>
@@ -1535,13 +1838,15 @@ function App() {
                 <h2 className="text-sm font-black text-[var(--t1)] uppercase tracking-[0.2em]">{t('configPanel')}</h2>
             </div>
             <div className="flex items-center gap-2">
-                <label className="p-2 text-[var(--t3)] hover:text-[var(--accent)] hover:bg-[var(--accent)]/10 rounded-lg cursor-pointer transition-all" title={t('importJson')}>
-                    <FileUp size={18} />
-                    <input type="file" accept=".json,.txt,.osu,.mc,.aff,.adofai,.vschart.json" onChange={handleImportJson} className="hidden" />
+                {/* v0.8.19：只保留「导入 timing」（原「导入 JSON 配置」），按钮放大一号 */}
+                <label
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[var(--accent)]/10 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 cursor-pointer transition-all active:scale-95"
+                    title={t('importTiming')}
+                >
+                    <FileUp size={22} />
+                    <span className="text-[11px] font-black uppercase tracking-wider whitespace-nowrap">{t('importTiming')}</span>
+                    <input type="file" accept=".osu,.txt,.json,.mc,.aff,.adofai,.vschart.json" onChange={handleImportTiming} className="hidden" />
                 </label>
-                <button onClick={handleExportJson} className="p-2 text-[var(--t3)] hover:text-[var(--accent)] hover:bg-[var(--accent)]/10 rounded-lg transition-all" title={t('exportJson')}>
-                    <Download size={18} />
-                </button>
             </div>
         </div>
         
@@ -1557,59 +1862,64 @@ function App() {
                 <OffsetInput value={globalOffset} onChange={handleOffsetChange} />
              </div>
 
-             {/* 导出：主按钮 JSON + 二级下拉（含 osu! TimingPoints） */}
+             {/* 导出：osu! timing（纯数据，可直接全选替换）+ 复制 + 其他格式 */}
              <div className="pt-4 border-t border-[var(--line)] relative">
-                <label className="text-[10px] text-[var(--t3)] block mb-2 uppercase font-black tracking-widest flex items-center gap-2">
-                    {t('exportJson')}
-                    <div className="group relative">
-                        <Info size={12} className="text-[var(--t4)]" />
-                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2 bg-gray-800 text-white text-[10px] rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity border border-[var(--line2)] shadow-xl z-50">{t('svHint')}</div>
-                    </div>
-                </label>
-                <div className="flex">
-                    {/* 主按钮：导出 JSON 配置 */}
+                <div className="flex items-center justify-between mb-2">
+                    <label className="text-[10px] text-[var(--t3)] block uppercase font-black tracking-widest flex items-center gap-2">
+                        {t('exportOsuTiming')}
+                        <div className="group relative">
+                            <Info size={12} className="text-[var(--t4)]" />
+                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2 bg-gray-800 text-white text-[10px] rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity border border-[var(--line2)] shadow-xl z-50">{t('svHint')}</div>
+                        </div>
+                    </label>
+                    {copied && <span className="text-[10px] font-black text-green-400 uppercase tracking-widest">{t('copied')}</span>}
+                </div>
+                <div className="flex items-center gap-1.5">
+                    {/* 复制当前 timing 到剪贴板（粘进谱面即可） */}
+                    <button
+                        onClick={handleCopyTiming}
+                        disabled={!audioData && !timingLoaded}
+                        className={`w-10 h-10 shrink-0 flex items-center justify-center rounded-xl border transition-all ${
+                            copied
+                                ? 'bg-green-500/20 border-green-500/50 text-green-400'
+                                : (audioData || timingLoaded)
+                                    ? 'bg-[var(--chip2)] border-[var(--line2)] text-[var(--accent)] hover:border-[var(--accent)] hover:text-[var(--accent2)] active:scale-95'
+                                    : 'bg-[var(--chip2)] border-[var(--line2)] text-[var(--t4)] cursor-not-allowed'
+                        }`}
+                        title={t('copyTiming')}
+                    >
+                        {copied ? <Check size={16} /> : <Copy size={16} />}
+                    </button>
+                    {/* 主按钮：导出 osu! timing */}
                     <button 
-                        onClick={handleExportJson}
-                        disabled={!audioData}
-                        className={`flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-l-xl text-sm font-black uppercase tracking-widest transition-all ${
-                            audioData 
+                        onClick={handleExportOsu}
+                        disabled={!audioData && !timingLoaded}
+                        className={`flex-1 h-10 flex items-center justify-center gap-2 px-2 rounded-xl text-[11px] font-black tracking-wide whitespace-nowrap transition-all ${
+                            (audioData || timingLoaded)
                                 ? 'bg-[var(--accent2)] hover:bg-[var(--accent2)] text-white shadow-lg active:scale-95' 
                                 : 'bg-[var(--chip2)] text-[var(--t4)] cursor-not-allowed'
                         }`}
-                        title={t('exportJson')}
+                        title={t('exportOsuTiming')}
                     >
                         <Download size={16} />
-                        {t('exportJson')}
+                        {t('exportOsuTiming')}
                     </button>
-                    {/* 二级菜单开关 */}
+                    {/* 其他音游格式 */}
                     <button
                         onClick={() => setShowExportMenu(m => !m)}
-                        disabled={!audioData}
-                        className={`px-3 rounded-r-xl border-l border-black/20 transition-all ${
-                            audioData ? 'bg-[var(--accent2)] hover:bg-[var(--accent2)] text-white' : 'bg-[var(--chip2)] text-[var(--t4)] cursor-not-allowed'
+                        disabled={!audioData && !timingLoaded}
+                        className={`w-9 h-10 shrink-0 flex items-center justify-center rounded-xl border-l transition-all ${
+                            (audioData || timingLoaded) ? 'bg-[var(--accent2)] text-white' : 'bg-[var(--chip2)] text-[var(--t4)] cursor-not-allowed'
                         }`}
-                        title={t('exportOsu')}
+                        title={t('exportNewSection')}
                     >
                         <ChevronDown size={16} className={`transition-transform ${showExportMenu ? 'rotate-180' : ''}`} />
                     </button>
                 </div>
-                {/* 二级下拉菜单 */}
+                {/* 二级下拉菜单（其他音游） */}
                 {showExportMenu && (
                     <div className="absolute left-0 right-0 mt-1.5 rounded-xl bg-[var(--panel)] border border-[var(--line2)] shadow-2xl z-50 overflow-hidden max-h-80 overflow-y-auto">
-                        <button
-                            onClick={() => { setShowExportMenu(false); handleExportJson(); }}
-                            className="w-full flex items-center gap-2 px-4 py-2.5 text-xs font-bold text-[var(--t2)] hover:bg-[var(--chip2)] transition-colors"
-                        >
-                            <Download size={14} /> {t('exportJson')}
-                        </button>
-                        <button
-                            onClick={() => { setShowExportMenu(false); handleExportOsu(); }}
-                            className="w-full flex items-center gap-2 px-4 py-2.5 text-xs font-bold text-[var(--accent)] hover:bg-[var(--chip2)] transition-colors border-t border-[var(--line)]"
-                        >
-                            <Gauge size={14} /> {t('exportOsu')}
-                        </button>
-                        {/* 其他音游（新功能，尚未充分测试） */}
-                        <div className="px-4 pt-2.5 pb-1.5 text-[9px] uppercase font-black tracking-widest text-[var(--t4)] border-t border-[var(--line)]">
+                        <div className="px-4 pt-2.5 pb-1.5 text-[9px] uppercase font-black tracking-widest text-[var(--t4)]">
                             {t('exportNewSection')}
                         </div>
                         {exportGameList.map(item => (
@@ -1626,6 +1936,44 @@ function App() {
                     </div>
                 )}
              </div>
+
+             {/* 谱面难度抽屉：.osz / 谱面文件夹里有多份 .osu 时出现，点一下切到那份谱面的 timing */}
+             {mapCandidates.length > 1 && (
+                <div>
+                    <button
+                        onClick={() => setShowMapDrawer(v => !v)}
+                        className="w-full flex items-center gap-2 text-[10px] uppercase font-black tracking-widest text-[var(--t3)] hover:text-[var(--t1)] transition-colors"
+                        title={mapSourceName}
+                    >
+                        <Music size={12} />
+                        <span className="flex-1 text-left">{t('mapOsuList')} · {mapCandidates.length}</span>
+                        <ChevronDown size={14} className={`transition-transform ${showMapDrawer ? 'rotate-180' : ''}`} />
+                    </button>
+                    {showMapDrawer && (
+                        <div className="mt-2 rounded-xl border border-[var(--line2)] bg-[var(--chip)] overflow-hidden max-h-56 overflow-y-auto custom-scrollbar">
+                            {mapCandidates.map(c => {
+                                const active = c.name === activeOsuName;
+                                return (
+                                    <button
+                                        key={c.path}
+                                        onClick={() => { void selectOsuDifficulty(c.name); }}
+                                        className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors border-b border-[var(--line)] last:border-b-0 ${
+                                            active ? 'bg-[var(--accent)]/15 text-[var(--accent)]' : 'text-[var(--t2)] hover:bg-[var(--chip2)]'
+                                        }`}
+                                        title={c.name}
+                                    >
+                                        <span className="flex-1 min-w-0">
+                                            <span className="block text-xs font-bold truncate">{c.version || c.name}</span>
+                                            <span className="block text-[9px] text-[var(--t4)] truncate font-mono">{c.name}</span>
+                                        </span>
+                                        {active && <Check size={14} className="shrink-0" />}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+             )}
              
              <div>
                 <div className="flex justify-between items-center mb-2">
@@ -1693,6 +2041,7 @@ function App() {
       {showSettings && (
         <SettingsModal
           settings={settings}
+          outputLatencyMs={outputLatencyMs}
           onChange={updateSettings}
           onReset={handleResetSettings}
           onClose={() => setShowSettings(false)}

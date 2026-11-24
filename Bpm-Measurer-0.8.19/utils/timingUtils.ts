@@ -16,11 +16,7 @@ export const recalculateTiming = (offset: number, points: Omit<TimingPoint, 'tim
     return [{ id: 'default', beatIndex: 0, bpm: 120, time: offset }];
   }
 
-  // 后续段落：
-  //  ① 红线位置：有绝对时间 timeSec 就用它（红线独立，改 BPM 不会挪动下一条红线）；
-  //     没有则按「拍号差值 × 上一段拍长」推算（旧配置兼容）
-  //  ② 输出拍号：回到 v0.7.18 的整数派生写法（界面「拍号」显示整数，便于阅读）
-  //     注意：导入的谱面会把每条红线的绝对时间存进 timeSec，所以取整不会丢精度
+  // 后续段落按上一段拍长推算
   for (let i = 1; i < sorted.length; i++) {
     const prevStored = sorted[i - 1];
     const prev = result[i - 1];

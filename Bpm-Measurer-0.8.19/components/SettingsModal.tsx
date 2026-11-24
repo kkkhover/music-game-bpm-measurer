@@ -5,6 +5,8 @@ import { X, RefreshCw, Shuffle, FlipVertical2, ArrowLeft } from 'lucide-react';
 
 interface SettingsModalProps {
   settings: AppSettings;
+  /** 最近一次起播时实测并冻结的输出链路延迟（毫秒）：只读显示，让用户核对软件补了多少 */
+  outputLatencyMs?: number;
   onChange: (s: AppSettings) => void; // 更新设置（父组件负责持久化与应用）
   onReset: () => void;                // 一键复原
   onClose: () => void;
@@ -77,11 +79,8 @@ const PalettePreview: React.FC<{ id: string; custom: [string, string, string] | 
   );
 };
 
-const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onChange, onReset, onClose }) => {
-  // ★ v0.8.16（修 Bug 1：多语言未全软件统一）：
-  //   原来这里只有 isZh ? nameZh : nameEn 的二选一 —— 选日语/韩语/法语等语言时，
-  //   主题名、频谱方案名、节拍器音色名仍然只显示中英两种，等于多语言没统一。
-  //   现在优先查 i18n（nameKey）；没配 key 的条目回退到中/英名，保证任何语言下都有可读文本。
+const SettingsModal: React.FC<SettingsModalProps> = ({ settings, outputLatencyMs = 0, onChange, onReset, onClose }) => {
+  // 名称按当前语言取
   const nameOf = (item: { nameZh: string; nameEn: string; nameKey?: string }): string =>
     item.nameKey ? t(item.nameKey) : (settings.lang === 'en' ? item.nameEn : item.nameZh);
   // 频谱方案分类二级页：默认切到当前方案所属分类
@@ -275,7 +274,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onChange, onRes
                 title={t('renderScaleHint')}
               />
             </div>
-            {/* 红线节拍线延迟微调（手动）：滑条 ±100ms，输入框可填任意值；仅偏移节拍线，不影响频谱/声谱时间轴 */}
+            {/* 红线延迟：只挪红线/节拍线刻度（正=右移），频谱与波形按音乐真实时间渲染，节拍器跟随红线 */}
             <div className="mt-3 pt-3 border-t border-[var(--line)]">
               <div className="flex items-center justify-between mb-1.5">
                 <span className="text-[10px] text-[var(--t3)] uppercase font-bold tracking-widest">{t('beatLineDelayMs')}</span>
@@ -297,6 +296,35 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onChange, onRes
                 className="w-full accent-[var(--accent)] cursor-pointer"
                 title={t('beatLineDelayMsHint')}
               />
+              {/* 只读：实测输出延迟（自动补偿量）。播放时画面整体后移这个时长，让「看见的 = 听见的」 */}
+              <div className="mt-1.5 flex items-center justify-between text-[10px] text-[var(--t3)]">
+                <span>{t('outputLatencyAuto')}</span>
+                <span className="font-mono text-[var(--t2)]">{outputLatencyMs > 0 ? `${outputLatencyMs} ms` : '—'}</span>
+              </div>
+            </div>
+            {/* 同步微调：自动实测之外的手动偏移（正=画面更滞后，听起来节拍器相对播放头更早） */}
+            <div className="mt-3 pt-3 border-t border-[var(--line)]">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-[10px] text-[var(--t3)] uppercase font-bold tracking-widest">{t('syncAdjustMs')}</span>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="number" step={1}
+                    value={settings.syncAdjustMs}
+                    onChange={(e) => onChange({ ...settings, syncAdjustMs: parseInt(e.target.value) || 0 })}
+                    className="w-20 bg-[var(--bg)] border border-[var(--line2)] rounded-md px-2 py-1 text-xs font-mono text-right focus:outline-none focus:border-[var(--accent)]"
+                    title={t('syncAdjustMsHint')}
+                  />
+                  <span className="text-[10px] text-[var(--t3)]">ms</span>
+                </div>
+              </div>
+              <input
+                type="range" min={-100} max={100} step={1}
+                value={Math.max(-100, Math.min(100, settings.syncAdjustMs))}
+                onChange={(e) => onChange({ ...settings, syncAdjustMs: parseInt(e.target.value) })}
+                className="w-full accent-[var(--accent)] cursor-pointer"
+                title={t('syncAdjustMsHint')}
+              />
+              <div className="mt-1 text-[10px] text-[var(--t3)] leading-relaxed">{t('syncAdjustMsHint')}</div>
             </div>
             {/* 频谱精度（FFT 采样点数）滑条：越大频率分辨率越高（0.5K≈86Hz / 1K≈43Hz / 2K≈21Hz / 4K≈11Hz @44.1kHz） */}
             <div className="mt-3 pt-3 border-t border-[var(--line)]">

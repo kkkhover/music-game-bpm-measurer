@@ -1,16 +1,21 @@
 // ===== 频谱原生 FFT 预计算（GitHub 主流方案）=====
-// 用 OfflineAudioContext + AnalyserNode 提取整曲频谱：Chromium 内部原生 FFT（SIMD 优化），
-// 比 JS 手写 FFT 快一个数量级。
-// 流程：解码后的 AudioBuffer → OfflineAudioContext（不发声全速渲染）→ AnalyserNode →
-//       ScriptProcessorNode 按块流式抓取 getFloatFrequencyData（dB 值）。
-// 存储：Uint8Array 量化（-120dB~0dB → 0~255），内存仅为 Float32 的 1/4，16K 精度也可承受。
-// 输出：Uint8Array[]，每列 = 一个 HOP 样本块的 fftSize/2 个量化 dB 值。
-// 兼容性：ScriptProcessorNode 已 deprecated 但 Electron 34 仍可用；任何异常静默回退（返回 null）。
 
 export interface PrecomputedSpectrogram {
-  data: Uint8Array[];    // 每列 fftSize/2 个量化 dB（0~255，对应 -120~0 dB），列 i 对应样本块 [i*hop, (i+1)*hop)
+  data: Uint8Array[];    // 每列 fftSize/2 个量化 dB（0~255，对应 -120~0 dB）
   hop: number;           // 每列样本步长（= fftSize/4，75% 窗重叠，AU 风格）
   fftSize: number;       // FFT 窗口（1024~16384，bins=fftSize/2）
+  /**
+   * ★ v0.8.19：列 i 的**真实**中心时间（样本）= i * hop + timeShift。
+   *
+   * 第 i 列是 AnalyserNode 在「已处理到 (i+1)*hop」那一刻抓的一帧，它的窗是**居中**的：
+   * 窗尾在 (i+1)*hop、长 fftSize，所以窗心 = (i+1)*hop - fftSize/2。
+   * hop = fftSize/4 时就是 (i-1)*hop，即 timeShift = -hop。
+   *
+   * 以前按 i*hop 取列 → 频谱整体右偏一个 hop（48k/2048 时 10.7ms），
+   * 这正是「红线里的频谱总跟红线差 10ms」的根因（实测正弦突变 50% 上升点在第 47.76 列，
+   * 居中模型预测 47.88，左对齐模型预测 46.88 → 实际是居中）。
+   */
+  timeShift: number;
 }
 // 量化范围：-120dB（Uint8=0）~ 0dB（Uint8=255）
 const DB_MIN = -120;
@@ -91,14 +96,9 @@ export async function precomputeSpectrogram(buffer: AudioBuffer, fftSize = 2048)
     await ctx.startRendering();              // 整曲渲染完成时，所有块已抓取
 
     if (cols.length === 0) return null;
-    const out = { data: cols, hop, fftSize };
+    const out = { data: cols, hop, fftSize, timeShift: hop - fftSize / 2 };
 
     // ★ v0.8.13：渲染完必须**显式拆掉离线音频图**，否则每打开一张谱面就多占一份内存。
-    //   实测（隔离 A/B，120s 音频）：不清理时每次预计算净增 **≈44MB，且强制 GC 也不回落**；
-    //   加上下面这段后不再增长。44MB ≈ 整曲 AudioBuffer(21MB) + 离线渲染缓冲(21MB)。
-    //   机理：src.buffer 指向整曲 AudioBuffer，processor.onaudioprocess 又闭包住 analyser/tmp/cols，
-    //   整条图连同音频一起被钉住；null 掉这些引用后图就能被回收。
-    //   （渲染已结束，断开节点不影响已经抓到的 cols）
     processor.onaudioprocess = null;
     try { processor.disconnect(); } catch { /* 已断开则忽略 */ }
     try { analyser.disconnect(); } catch { /* 同上 */ }
